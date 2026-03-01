@@ -281,6 +281,25 @@ export function shouldIgnoreCodexLogLine(line: string): boolean {
     }
 
     const record = parsed as Record<string, unknown>;
+    const method = readStringFromAny(record["method"]);
+    if (method) {
+      const normalizedMethod = method.toLowerCase();
+      const ignoredMethods = new Set([
+        "codex/event/agent_message_content_delta",
+        "codex/event/agent_message_delta",
+        "item/agentmessage/delta"
+      ]);
+      if (ignoredMethods.has(normalizedMethod)) {
+        return true;
+      }
+    }
+
+    const params = asRecord(record["params"]);
+    const messageType = readStringFromAny(asRecord(params?.["msg"])?.["type"])?.toLowerCase();
+    if (messageType === "agent_message_content_delta" || messageType === "agent_message_delta") {
+      return true;
+    }
+
     const level = readStringFromAny(record["level"], record["severity"])?.toLowerCase();
     return level === "delta";
   } catch {

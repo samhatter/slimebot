@@ -7,14 +7,14 @@ const commandAliases: Record<string, string> = {
   i: "interrupt",
   a: "approve",
   s: "skip",
-  r: "reasoning"
+  r: "reasoning",
 };
 
 const supportedCommands = new Set<string>([
   "help",
   "new",
   "resume",
-  "threads",
+  "thread",
   "rollback",
   "compact",
   "archive",

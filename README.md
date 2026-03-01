@@ -80,7 +80,8 @@ General:
 - `!help` — list commands
 - `!new` — create and map a new thread to this room
 - `!resume <threadId>` — resume thread and map to this room
-- `!threads [archived]` — list recent threads (`archived` lists archived threads)
+- `!thread list [archived|true]` — list recent threads (`archived`/`true` lists archived threads)
+- `!thread status [threadId]` — show thread status (`thread/read`) for a thread; defaults to mapped thread
 - `!models` — list model catalog response
 - `!account` — read account/auth information
 

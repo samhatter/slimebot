@@ -1,6 +1,26 @@
 import { asRecord } from "./commands.js";
 import { escapeHtml, readStringFromAny, toJsonSnippet } from "./controllerUtils.js";
 
+type ThreadStatusFormatInput = {
+  threadId: string;
+  name: string;
+  preview: string;
+  updatedAt: string;
+  modelProvider: string;
+  selectedModel: string;
+  statusType: string;
+  agentNickname: string;
+  agentRole: string;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalTokens?: number;
+  lastInputTokens?: number;
+  lastOutputTokens?: number;
+  lastTotalTokens?: number;
+  archived: string;
+  defaultEffort: string;
+};
+
 export function formatJsonResponse(title: string, value: unknown): { body: string; formattedBody?: string } {
   const json = toJsonSnippet(value, 7000);
   return {
@@ -149,6 +169,48 @@ export function formatModelList(result: unknown): { body: string; formattedBody?
 
   return {
     body: lines.join("\n"),
+    formattedBody
+  };
+}
+
+export function formatThreadStatus(input: ThreadStatusFormatInput): { body: string; formattedBody?: string } {
+  const body = [
+    `Thread status for ${input.threadId}:`,
+    `name: ${input.name}`,
+    `preview: ${input.preview}`,
+    `updated: ${input.updatedAt}`,
+    `provider: ${input.modelProvider}`,
+    `selected model: ${input.selectedModel}`,
+    `status: ${input.statusType}`,
+    `agent nickname: ${input.agentNickname}`,
+    `agent role: ${input.agentRole}`,
+    `total thread token usage (input/output/total): ${input.totalInputTokens ?? "-"}/${input.totalOutputTokens ?? "-"}/${input.totalTokens ?? "-"}`,
+    `last token usage (input/output/total): ${input.lastInputTokens ?? "-"}/${input.lastOutputTokens ?? "-"}/${input.lastTotalTokens ?? "-"}`,
+    `archived: ${input.archived}`,
+    `default reasoning: ${input.defaultEffort}`
+  ].join("\n");
+
+  const formattedBody = [
+    "<b>Thread status</b>",
+    "<ul>",
+    `<li><b>threadId:</b> <code>${escapeHtml(input.threadId)}</code></li>`,
+    `<li><b>name:</b> ${escapeHtml(input.name)}</li>`,
+    `<li><b>preview:</b> ${escapeHtml(input.preview)}</li>`,
+    `<li><b>updated:</b> ${escapeHtml(input.updatedAt)}</li>`,
+    `<li><b>provider:</b> ${escapeHtml(input.modelProvider)}</li>`,
+    `<li><b>selected model:</b> ${escapeHtml(input.selectedModel)}</li>`,
+    `<li><b>status:</b> ${escapeHtml(input.statusType)}</li>`,
+    `<li><b>agent nickname:</b> ${escapeHtml(input.agentNickname)}</li>`,
+    `<li><b>agent role:</b> ${escapeHtml(input.agentRole)}</li>`,
+    `<li><b>total thread token usage (input/output/total):</b> ${escapeHtml(String(input.totalInputTokens ?? "-"))}/${escapeHtml(String(input.totalOutputTokens ?? "-"))}/${escapeHtml(String(input.totalTokens ?? "-"))}</li>`,
+    `<li><b>last token usage (input/output/total):</b> ${escapeHtml(String(input.lastInputTokens ?? "-"))}/${escapeHtml(String(input.lastOutputTokens ?? "-"))}/${escapeHtml(String(input.lastTotalTokens ?? "-"))}</li>`,
+    `<li><b>archived:</b> ${escapeHtml(input.archived)}</li>`,
+    `<li><b>default reasoning:</b> ${escapeHtml(input.defaultEffort)}</li>`,
+    "</ul>"
+  ].join("");
+
+  return {
+    body,
     formattedBody
   };
 }

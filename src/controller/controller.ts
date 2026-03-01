@@ -12,7 +12,7 @@ import {
   type ControllerCommand,
   parseControllerCommand
 } from "./commands.js";
-import { formatJsonResponse, formatModelList, formatThreadList } from "./controllerFormatting.js";
+import { formatJsonResponse, formatModelList, formatThreadList, formatThreadStatus } from "./controllerFormatting.js";
 import {
   describeToolLikeItem,
   escapeHtml,
@@ -46,6 +46,15 @@ type PendingToolActivity = {
 
 type ReasoningEffort = "low" | "medium" | "high";
 
+type ThreadTokenUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  lastInputTokens?: number;
+  lastOutputTokens?: number;
+  lastTotalTokens?: number;
+};
+
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
@@ -58,6 +67,8 @@ export class BotController {
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
   private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
+  private readonly selectedModelByThreadId = new Map<string, string>();
+  private readonly tokenUsageByThreadId = new Map<string, ThreadTokenUsage>();
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
@@ -197,6 +208,7 @@ export class BotController {
       }
 
       this.inFlightTurnByThreadId.set(threadId, turnId);
+      this.updateSelectedModelForThread(threadId, record);
     });
 
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
@@ -208,6 +220,8 @@ export class BotController {
       if (!threadId) {
         return;
       }
+
+      this.updateSelectedModelForThread(threadId, record);
 
       const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
       if (pendingInterruptTurnId && (!turnId || pendingInterruptTurnId === turnId)) {
@@ -234,6 +248,37 @@ export class BotController {
       }
 
       this.clearPendingToolActivity(threadId, turnId);
+    });
+
+    this.codexAppServer.on("notification:model/rerouted", (params: unknown) => {
+      const record = asRecord(params);
+      const threadId = readStringFromAny(record?.["threadId"]);
+      const toModel = readStringFromAny(record?.["toModel"]);
+      if (!threadId || !toModel) {
+        return;
+      }
+
+      this.selectedModelByThreadId.set(threadId, toModel);
+    });
+
+    this.codexAppServer.on("notification:thread/tokenUsage/updated", (params: unknown) => {
+      const record = asRecord(params);
+      const threadId = readStringFromAny(record?.["threadId"]);
+      if (!threadId) {
+        return;
+      }
+
+      this.updateTokenUsageForThread(threadId, record);
+    });
+
+    this.codexAppServer.on("notification:codex/event/token_count", (params: unknown) => {
+      const record = asRecord(params);
+      const threadId = readStringFromAny(record?.["conversationId"], record?.["threadId"]);
+      if (!threadId) {
+        return;
+      }
+
+      this.updateSelectedModelForThread(threadId, record);
     });
 
     this.codexAppServer.on("notification:item/started", async (params: unknown) => {
@@ -579,8 +624,8 @@ export class BotController {
       case "resume":
         await this.handleResumeCommand(roomId, command);
         return;
-      case "threads":
-        await this.handleThreadsCommand(roomId, command);
+      case "thread":
+        await this.handleThreadCommand(roomId, command);
         return;
       case "rollback":
         await this.handleRollbackCommand(roomId, command);
@@ -629,7 +674,8 @@ export class BotController {
       "- !help: Show this command list",
       "- !new: Create and map a new Codex thread for this room",
       "- !resume <threadId>: Resume a thread and map it to this room",
-      "- !threads [archived]: List recent threads",
+      "- !thread list [archived|true]: List recent threads",
+      "- !thread status [threadId]: Show status for a thread (mapped thread by default)",
       "- !rollback [numTurns] [threadId]: Roll back turns (default 1)",
       "- !compact [threadId]: Trigger thread compaction",
       "- !archive [threadId]: Archive a thread",
@@ -733,27 +779,104 @@ export class BotController {
     }
   }
 
-  private async handleThreadsCommand(roomId: string, command: ControllerCommand): Promise<void> {
+  private async handleThreadCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
-    const archivedArg = command.args[0]?.toLowerCase();
-    const archived = archivedArg === "archived" || archivedArg === "true";
+    const subcommandArg = command.args[0]?.trim().toLowerCase();
 
-    try {
-      const result = await this.codexAppServer.threadList({
-        limit: 20,
-        sortKey: "updated_at",
-        archived
-      });
-      const formattedThreadList = formatThreadList(result, archived);
-      await this.sendRichTextMessage(roomId, formattedThreadList.body, formattedThreadList.formattedBody);
-    } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
-      this.logWarn(`Failed to list threads: ${String(error)}`);
+    if (!subcommandArg || subcommandArg === "list" || subcommandArg === "archived" || subcommandArg === "true") {
+      const archivedArg = subcommandArg === "list" ? command.args[1]?.toLowerCase() : subcommandArg;
+      const archived = archivedArg === "archived" || archivedArg === "true";
+
+      try {
+        const result = await this.codexAppServer.threadList({
+          limit: 20,
+          sortKey: "updated_at",
+          archived
+        });
+        const formattedThreadList = formatThreadList(result, archived);
+        await this.sendRichTextMessage(roomId, formattedThreadList.body, formattedThreadList.formattedBody);
+      } catch (error) {
+        await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
+        this.logWarn(`Failed to list threads: ${String(error)}`);
+      }
+      return;
     }
+
+    if (subcommandArg === "status") {
+      const threadId = this.resolveThreadIdForCommand(roomId, command.args[1]?.trim(), "!thread status [threadId]");
+      if (!threadId) {
+        return;
+      }
+
+      try {
+        const result = await this.codexAppServer.threadRead({ threadId });
+        const threadRecord = asRecord(asRecord(result)?.["thread"]);
+        if (!threadRecord) {
+          const threadStatusResponse = formatJsonResponse("Thread status response", result);
+          await this.sendRichTextMessage(roomId, threadStatusResponse.body, threadStatusResponse.formattedBody);
+          return;
+        }
+
+        const name = readStringFromAny(threadRecord["name"]) ?? "-";
+        const preview = readStringFromAny(threadRecord["preview"]) ?? "-";
+        const updatedAt = readStringFromAny(threadRecord["updatedAt"], threadRecord["createdAt"]) ?? "-";
+        const modelProvider = readStringFromAny(threadRecord["modelProvider"]) ?? "-";
+        const selectedModel =
+          readStringFromAny(
+            threadRecord["model"],
+            asRecord(threadRecord["settings"])?.["model"],
+            asRecord(threadRecord["defaultSettings"])?.["model"]
+          )
+          ?? this.selectedModelByThreadId.get(threadId)
+          ?? "-";
+        const statusType = readStringFromAny(asRecord(threadRecord["status"])?.["type"], threadRecord["status"]) ?? "-";
+        const agentNickname = readStringFromAny(threadRecord["agentNickname"]) ?? "-";
+        const agentRole = readStringFromAny(threadRecord["agentRole"]) ?? "-";
+        const archived = threadRecord["archived"] === true ? "yes" : "no";
+        const defaultEffort = extractThreadDefaultEffort(threadRecord) ?? "default";
+
+        this.updateTokenUsageForThread(threadId, threadRecord);
+        const tokenUsage = this.tokenUsageByThreadId.get(threadId);
+        const inputTokens = tokenUsage?.inputTokens;
+        const outputTokens = tokenUsage?.outputTokens;
+        const totalTokens = tokenUsage?.totalTokens;
+        const lastInputTokens = tokenUsage?.lastInputTokens;
+        const lastOutputTokens = tokenUsage?.lastOutputTokens;
+        const lastTotalTokens = tokenUsage?.lastTotalTokens;
+
+        const formattedStatus = formatThreadStatus({
+          threadId,
+          name,
+          preview,
+          updatedAt,
+          modelProvider,
+          selectedModel,
+          statusType,
+          agentNickname,
+          agentRole,
+          totalInputTokens: inputTokens,
+          totalOutputTokens: outputTokens,
+          totalTokens,
+          lastInputTokens,
+          lastOutputTokens,
+          lastTotalTokens,
+          archived,
+          defaultEffort
+        });
+
+        await this.sendRichTextMessage(roomId, formattedStatus.body, formattedStatus.formattedBody);
+      } catch (error) {
+        await this.sendTextMessage(roomId, `Failed to read thread ${threadId}: ${String(error)}`);
+        this.logWarn(`Failed to read thread ${threadId}: ${String(error)}`);
+      }
+      return;
+    }
+
+    await this.sendTextMessage(roomId, "Usage: !thread <list|status> [args]");
   }
 
   private async handleRollbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
@@ -1148,6 +1271,56 @@ export class BotController {
 
     void this.sendTextMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
     return undefined;
+  }
+
+  private updateTokenUsageForThread(threadId: string, payload: unknown): void {
+    const record = asRecord(payload);
+    const tokenUsageRecord = asRecord(record?.["tokenUsage"]);
+    if (!tokenUsageRecord) {
+      return;
+    }
+
+    const totalRecord = asRecord(tokenUsageRecord["total"]);
+    const lastRecord = asRecord(tokenUsageRecord["last"]);
+    const inputTokens = typeof totalRecord?.["inputTokens"] === "number" ? Math.trunc(totalRecord["inputTokens"]) : undefined;
+    const outputTokens = typeof totalRecord?.["outputTokens"] === "number" ? Math.trunc(totalRecord["outputTokens"]) : undefined;
+    const totalTokens = typeof totalRecord?.["totalTokens"] === "number" ? Math.trunc(totalRecord["totalTokens"]) : undefined;
+    const lastInputTokens = typeof lastRecord?.["inputTokens"] === "number" ? Math.trunc(lastRecord["inputTokens"]) : undefined;
+    const lastOutputTokens = typeof lastRecord?.["outputTokens"] === "number" ? Math.trunc(lastRecord["outputTokens"]) : undefined;
+    const lastTotalTokens = typeof lastRecord?.["totalTokens"] === "number" ? Math.trunc(lastRecord["totalTokens"]) : undefined;
+
+    const existingUsage = this.tokenUsageByThreadId.get(threadId) ?? {};
+    this.tokenUsageByThreadId.set(threadId, {
+      inputTokens: inputTokens ?? existingUsage.inputTokens,
+      outputTokens: outputTokens ?? existingUsage.outputTokens,
+      totalTokens: totalTokens ?? existingUsage.totalTokens,
+      lastInputTokens: lastInputTokens ?? existingUsage.lastInputTokens,
+      lastOutputTokens: lastOutputTokens ?? existingUsage.lastOutputTokens,
+      lastTotalTokens: lastTotalTokens ?? existingUsage.lastTotalTokens
+    });
+  }
+
+  private updateSelectedModelForThread(threadId: string, payload: unknown): void {
+    const record = asRecord(payload);
+    const messageRecord = asRecord(record?.["msg"]);
+    const rateLimitsRecord = asRecord(record?.["rateLimits"]);
+    const messageRateLimitsRecord = asRecord(messageRecord?.["rate_limits"]);
+    const turnRecord = asRecord(record?.["turn"]);
+    const threadRecord = asRecord(record?.["thread"]);
+    const model = readStringFromAny(
+      record?.["toModel"],
+      record?.["model"],
+      rateLimitsRecord?.["limitName"],
+      messageRateLimitsRecord?.["limit_name"],
+      turnRecord?.["model"],
+      asRecord(turnRecord?.["settings"])?.["model"],
+      threadRecord?.["model"],
+      asRecord(threadRecord?.["settings"])?.["model"]
+    );
+
+    if (model) {
+      this.selectedModelByThreadId.set(threadId, model);
+    }
   }
 
   private clearPendingToolActivity(threadId: string, turnId?: string): void {
