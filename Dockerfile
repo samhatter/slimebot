@@ -6,7 +6,8 @@ RUN npm install
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY tsconfig.json ./tsconfig.json
+COPY src ./src
 RUN npm run build
 
 FROM node:22-bookworm-slim AS runner

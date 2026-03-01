@@ -2,12 +2,14 @@ import { LogService, MatrixClient } from "matrix-bot-sdk";
 import type { AppConfig } from "./appConfig.js";
 import { CodexAppServerProcess } from "./codexAppServerProcess.js";
 import { type ControllerCommand, parseControllerCommand } from "./controllerCommands.js";
-import { getAuthUrlFromLoginResult, isMatrixReplyMessage } from "./controllerParsers.js";
+import { asRecord, getAuthUrlFromLoginResult, isMatrixReplyMessage } from "./controllerParsers.js";
 
 export class BotController {
   private readonly matrixClient: MatrixClient;
   private readonly codexAppServer?: CodexAppServerProcess;
   private readonly processStartMs = Date.now();
+  private loginRoomId?: string;
+  private pendingLoginRedirectUri?: string;
 
   public constructor(private readonly appConfig: AppConfig) {
     this.matrixClient = new MatrixClient(appConfig.matrix.homeserverUrl, appConfig.matrix.accessToken);
@@ -153,13 +155,41 @@ export class BotController {
         );
       }
     });
+
+    this.codexAppServer.on("notification:account/login/completed", async (params: unknown) => {
+      const roomId = this.loginRoomId;
+      if (!roomId) {
+        return;
+      }
+
+      const record = asRecord(params);
+      const success = record?.["success"];
+      const error = record?.["error"];
+
+      if (success === true) {
+        await this.sendTextMessage(roomId, "Login completed successfully.");
+      } else {
+        const errorText = typeof error === "string" && error ? error : "unknown error";
+        await this.sendTextMessage(roomId, `Login failed: ${errorText}`);
+      }
+
+      this.pendingLoginRedirectUri = undefined;
+      this.loginRoomId = undefined;
+    });
   }
 
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
-    if (command.name !== "login") {
+    if (command.name === "login") {
+      await this.handleLoginCommand(roomId);
       return;
     }
 
+    if (command.name === "callback") {
+      await this.handleCallbackCommand(roomId, command);
+    }
+  }
+
+  private async handleLoginCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
       return;
@@ -176,11 +206,76 @@ export class BotController {
         return;
       }
 
-      await this.sendTextMessage(roomId, `Open this URL to sign in: ${authUrl}`);
+      this.loginRoomId = roomId;
+      this.pendingLoginRedirectUri = this.getRedirectUriFromAuthUrl(authUrl);
+
+      await this.sendTextMessage(
+        roomId,
+        `Open this URL to sign in: ${authUrl}\nAfter approving, paste the full callback URL here using: !callback <callback-url>`
+      );
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to start login: ${String(error)}`);
       LogService.warn("matrix-runner", `Failed to start chatgpt login flow: ${String(error)}`);
     }
+  }
+
+  private async handleCallbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const callbackInput = command.args[0]?.trim();
+    if (!callbackInput) {
+      await this.sendTextMessage(roomId, "Usage: !callback <full-callback-url>");
+      return;
+    }
+
+    const callbackUrl = this.normalizeCallbackUrl(callbackInput);
+    if (!callbackUrl) {
+      await this.sendTextMessage(roomId, "Could not parse callback URL. Paste the full URL from your browser.");
+      return;
+    }
+
+    try {
+      const response = await fetch(callbackUrl, {
+        method: "GET",
+        redirect: "manual"
+      });
+
+      await this.sendTextMessage(roomId, `Callback triggered inside container (status ${response.status}). Waiting for login completion…`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to trigger callback URL: ${String(error)}`);
+      LogService.warn("matrix-runner", `Failed to trigger callback URL: ${String(error)}`);
+    }
+  }
+
+  private getRedirectUriFromAuthUrl(authUrl: string): string | undefined {
+    try {
+      const parsedAuthUrl = new URL(authUrl);
+      const redirectUri = parsedAuthUrl.searchParams.get("redirect_uri");
+      return redirectUri ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private normalizeCallbackUrl(input: string): string | undefined {
+    const cleanedInput = input.replace(/^<|>$/gu, "");
+
+    try {
+      return new URL(cleanedInput).toString();
+    } catch {
+    }
+
+    if (this.pendingLoginRedirectUri && cleanedInput.startsWith("/")) {
+      try {
+        return new URL(cleanedInput, this.pendingLoginRedirectUri).toString();
+      } catch {
+      }
+    }
+
+    return undefined;
   }
 
   private async initializeCodexAppServer(): Promise<void> {

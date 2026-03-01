@@ -3,3 +3,5 @@ dist/
 .git/
 .gitignore
 README.md
+codex/
+workspace/
