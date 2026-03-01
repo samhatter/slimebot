@@ -83,6 +83,7 @@ General:
 - `!thread list [archived|true]` — list recent threads (`archived`/`true` lists archived threads)
 - `!thread status [threadId]` — show thread status (`thread/read`) for a thread; defaults to mapped thread
 - `!models` — list model catalog response
+- `!model <modelId> [threadId]` — set selected model for subsequent turns (defaults to mapped thread)
 - `!account` — read account/auth information
 
 Thread operations:

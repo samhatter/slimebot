@@ -1,7 +1,12 @@
+/**
+ * @fileoverview Room-to-thread routing persistence helpers.
+ */
+
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { asRecord } from "./commands.js";
 
+/** Loads persisted room-thread routes from disk, returning an empty map on failure. */
 export function loadPersistedRoomThreadRoutes(
   routingPersistencePath: string,
   logInfo: (message: string) => void,
@@ -45,6 +50,7 @@ export function loadPersistedRoomThreadRoutes(
   }
 }
 
+/** Persists room-thread routes to disk as a JSON state file. */
 export function persistRoomThreadRoutes(
   routingPersistencePath: string,
   roomThreadRoutes: ReadonlyMap<string, string>,

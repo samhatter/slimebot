@@ -1,26 +1,72 @@
-import { asRecord } from "./commands.js";
-import { escapeHtml, readStringFromAny, toJsonSnippet } from "./controllerUtils.js";
+/**
+ * @fileoverview Matrix-specific response formatting helpers (plain + HTML).
+ */
 
-type ThreadStatusFormatInput = {
-  threadId: string;
-  name: string;
-  preview: string;
-  updatedAt: string;
-  modelProvider: string;
-  selectedModel: string;
-  statusType: string;
-  agentNickname: string;
-  agentRole: string;
-  totalInputTokens?: number;
-  totalOutputTokens?: number;
-  totalTokens?: number;
-  lastInputTokens?: number;
-  lastOutputTokens?: number;
-  lastTotalTokens?: number;
-  archived: string;
-  defaultEffort: string;
-};
+import type {
+  ChannelApprovalRequest,
+  ChannelThreadStatusView,
+  ChannelToolActivityCompleted,
+  ChannelToolActivityStarted
+} from "../channel.js";
 
+/** Safely narrows unknown values into record-like objects. */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+/** Returns the first non-empty string/number value as a string. */
+function readStringFromAny(...values: Array<unknown>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value) {
+      return value;
+    }
+
+    if (typeof value === "number") {
+      return String(value);
+    }
+  }
+
+  return undefined;
+}
+
+/** Safely stringifies arbitrary JSON-like values. */
+function stringifyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Truncates a long string to the given max length with marker suffix. */
+function truncateForMessage(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}\n... (truncated)`;
+}
+
+/** Builds a JSON snippet string with truncation applied. */
+function toJsonSnippet(value: unknown, maxLength = 3500): string {
+  return truncateForMessage(stringifyJson(value), maxLength);
+}
+
+/** Escapes HTML special characters for safe Matrix rich message rendering. */
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/** Formats an arbitrary JSON response into plain text and HTML message bodies. */
 export function formatJsonResponse(title: string, value: unknown): { body: string; formattedBody?: string } {
   const json = toJsonSnippet(value, 7000);
   return {
@@ -29,6 +75,26 @@ export function formatJsonResponse(title: string, value: unknown): { body: strin
   };
 }
 
+/** Formats help output into plain text and HTML list output. */
+export function formatHelp(lines: string[]): { body: string; formattedBody?: string } {
+  const formattedBody = [
+    "<b>Available commands</b>",
+    "<ul>",
+    ...lines.slice(1).map((line) => {
+      const [command, ...descriptionParts] = line.slice(2).split(":");
+      const description = descriptionParts.join(":").trim();
+      return `<li><code>${escapeHtml(command.trim())}</code>: ${escapeHtml(description)}</li>`;
+    }),
+    "</ul>"
+  ].join("");
+
+  return {
+    body: lines.join("\n"),
+    formattedBody
+  };
+}
+
+/** Formats a thread list response into plain text and HTML table output. */
 export function formatThreadList(result: unknown, archived: boolean): { body: string; formattedBody?: string } {
   const record = asRecord(result);
   const data = record?.["data"];
@@ -89,6 +155,7 @@ export function formatThreadList(result: unknown, archived: boolean): { body: st
   };
 }
 
+/** Formats a model list response into plain text and HTML table output. */
 export function formatModelList(result: unknown): { body: string; formattedBody?: string } {
   const record = asRecord(result);
   const data = record?.["data"];
@@ -173,7 +240,8 @@ export function formatModelList(result: unknown): { body: string; formattedBody?
   };
 }
 
-export function formatThreadStatus(input: ThreadStatusFormatInput): { body: string; formattedBody?: string } {
+/** Formats thread status details into plain text and HTML list output. */
+export function formatThreadStatus(input: ChannelThreadStatusView): { body: string; formattedBody?: string } {
   const body = [
     `Thread status for ${input.threadId}:`,
     `name: ${input.name}`,
@@ -214,3 +282,106 @@ export function formatThreadStatus(input: ThreadStatusFormatInput): { body: stri
     formattedBody
   };
 }
+
+/** Formats approval requests into plain text and HTML list output. */
+export function formatApprovalRequest(request: ChannelApprovalRequest): { body: string; formattedBody?: string } {
+  const formattedBody = [
+    `<b>Approval requested for ${escapeHtml(request.approvalType)}</b>`,
+    "<ul>",
+    `<li><b>threadId:</b> <code>${escapeHtml(request.threadId)}</code></li>`,
+    `<li><b>turnId:</b> <code>${escapeHtml(request.turnId)}</code></li>`,
+    `<li><b>itemId:</b> <code>${escapeHtml(request.itemId)}</code></li>`,
+    request.commandPreview ? `<li><b>command:</b> <code>${escapeHtml(request.commandPreview)}</code></li>` : undefined,
+    request.reason ? `<li><b>reason:</b> ${escapeHtml(request.reason)}</li>` : undefined,
+    "</ul>",
+    "<p>Reply with <code>!approve</code> (<code>!a</code>) to approve, or <code>!skip</code> (<code>!s</code>) to decline.</p>"
+  ]
+    .filter((line): line is string => typeof line === "string")
+    .join("");
+
+  const body = [
+    `Approval requested for ${request.approvalType}.`,
+    `threadId: ${request.threadId}`,
+    `turnId: ${request.turnId}`,
+    `itemId: ${request.itemId}`,
+    request.commandPreview ? `command: ${request.commandPreview}` : undefined,
+    request.reason ? `reason: ${request.reason}` : undefined,
+    "Reply with !approve (!a) to approve, or !skip (!s) to decline."
+  ]
+    .filter((line): line is string => typeof line === "string")
+    .join("\n");
+
+  return {
+    body,
+    formattedBody
+  };
+}
+
+/** Formats tool-start activity notifications into plain text and HTML output. */
+export function formatToolActivityStarted(activity: ChannelToolActivityStarted): { body: string; formattedBody?: string } {
+  const snapshotJson = activity.snapshot ? toJsonSnippet(activity.snapshot, 1800) : undefined;
+  const body = [
+    `Tool: ${activity.itemType}`,
+    snapshotJson
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+
+  const formattedBody = [
+    `<p><b>Tool:</b> ${escapeHtml(activity.itemType)}</p>`,
+    snapshotJson
+      ? `<pre><code>${escapeHtml(snapshotJson)}</code></pre>`
+      : ""
+  ].join("");
+
+  return {
+    body,
+    formattedBody
+  };
+}
+
+/** Formats tool completion notifications into plain text and HTML output. */
+export function formatToolActivityCompleted(activity: ChannelToolActivityCompleted): { body: string; formattedBody?: string } {
+  const snapshotJson = activity.snapshot ? toJsonSnippet(activity.snapshot, 1800) : undefined;
+  const body = [
+    `${activity.completionLabel}: ${activity.itemType} (${activity.elapsedSeconds}s)`,
+    activity.itemError ? `error: ${activity.itemError}` : undefined,
+    snapshotJson
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+
+  const formattedBody = [
+    `<p><b>${escapeHtml(activity.completionLabel)}:</b> ${escapeHtml(activity.itemType)} (${escapeHtml(activity.elapsedSeconds)}s)</p>`,
+    activity.itemError ? `<p><b>error:</b> ${escapeHtml(activity.itemError)}</p>` : "",
+    snapshotJson
+      ? `<pre><code>${escapeHtml(snapshotJson)}</code></pre>`
+      : ""
+  ].join("");
+
+  return {
+    body,
+    formattedBody
+  };
+}
+
+/** Formats compaction completion notifications into plain text and HTML output. */
+export function formatCompactionCompleted(threadId: string, turnId?: string): { body: string; formattedBody?: string } {
+  const body = turnId
+    ? `Compaction completed for ${threadId} (turn ${turnId}).`
+    : `Compaction completed for ${threadId}.`;
+
+  const formattedBody = [
+    "<b>Compaction completed</b>",
+    "<ul>",
+    `<li><b>threadId:</b> <code>${escapeHtml(threadId)}</code></li>`,
+    turnId ? `<li><b>turnId:</b> <code>${escapeHtml(turnId)}</code></li>` : "",
+    "</ul>"
+  ].join("");
+
+  return {
+    body,
+    formattedBody
+  };
+}
+

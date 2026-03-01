@@ -1,5 +1,12 @@
+/**
+ * @fileoverview Shared controller utility helpers for normalization and formatting.
+ */
+
 import { asRecord } from "./commands.js";
 
+export { stringifyJson, truncateForMessage, toJsonSnippet } from "../utils/messageFormatting.js";
+
+/** Returns the first non-empty string/number value as a string. */
 export function readStringFromAny(...values: Array<unknown>): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value) {
@@ -14,39 +21,12 @@ export function readStringFromAny(...values: Array<unknown>): string | undefined
   return undefined;
 }
 
-export function stringifyJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-export function truncateForMessage(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  return `${value.slice(0, maxLength)}\n... (truncated)`;
-}
-
-export function toJsonSnippet(value: unknown, maxLength = 3500): string {
-  return truncateForMessage(stringifyJson(value), maxLength);
-}
-
-export function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
+/** Builds a map key for pending tool activity entries. */
 export function getToolActivityKey(threadId: string, itemId: string): string {
   return `${threadId}:${itemId}`;
 }
 
+/** Removes noisy or redundant fields from tool event payload values. */
 function sanitizeToolPayloadValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     const sanitizedArray = value
@@ -88,6 +68,7 @@ function sanitizeToolPayloadValue(value: unknown): unknown {
   return Object.keys(sanitizedRecord).length > 0 ? sanitizedRecord : undefined;
 }
 
+/** Extracts a compact tool event snapshot for user-facing status updates. */
 export function extractToolEventSnapshot(item: Record<string, unknown>): Record<string, unknown> | undefined {
   const normalizedType = readStringFromAny(item["type"])?.toLowerCase();
   const sanitizedItem = sanitizeToolPayloadValue(item);
@@ -113,6 +94,7 @@ export function extractToolEventSnapshot(item: Record<string, unknown>): Record<
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 
+/** Detects and describes tool-like Codex items for progress reporting. */
 export function describeToolLikeItem(itemType: string, item: Record<string, unknown>): string | undefined {
   const normalizedType = itemType.toLowerCase();
 
@@ -228,6 +210,7 @@ export function describeToolLikeItem(itemType: string, item: Record<string, unkn
   return itemType;
 }
 
+/** Extracts default reasoning effort from thread-like payload records. */
 export function extractThreadDefaultEffort(record: Record<string, unknown> | undefined): string | undefined {
   if (!record) {
     return undefined;
@@ -245,6 +228,7 @@ export function extractThreadDefaultEffort(record: Record<string, unknown> | und
   );
 }
 
+/** Extracts redirect URI from login auth URL query params. */
 export function getRedirectUriFromAuthUrl(authUrl: string): string | undefined {
   try {
     const parsedAuthUrl = new URL(authUrl);
@@ -255,6 +239,7 @@ export function getRedirectUriFromAuthUrl(authUrl: string): string | undefined {
   }
 }
 
+/** Normalizes callback URL input to absolute URL form where possible. */
 export function normalizeCallbackUrl(input: string, pendingLoginRedirectUri?: string): string | undefined {
   const cleanedInput = input.replace(/^<|>$/gu, "");
 
@@ -273,6 +258,7 @@ export function normalizeCallbackUrl(input: string, pendingLoginRedirectUri?: st
   return undefined;
 }
 
+/** Filters noisy Codex streaming delta logs from stdout/stderr piping. */
 export function shouldIgnoreCodexLogLine(line: string): boolean {
   try {
     const parsed = JSON.parse(line) as unknown;

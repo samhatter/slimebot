@@ -1,7 +1,12 @@
+/**
+ * @fileoverview JSON-RPC process wrapper for the Codex app-server stdio protocol.
+ */
+
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
 
+/** Process launch options for the Codex app-server child process. */
 type CodexAppServerProcessOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -57,14 +62,17 @@ type RequestOptions = {
   timeoutMs?: number;
 };
 
+/** Type guard for JSON object values. */
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null;
 }
 
+/** Type guard for valid JSON-RPC id values. */
 function isJsonRpcId(value: unknown): value is JsonRpcId {
   return typeof value === "number" || typeof value === "string";
 }
 
+/** Type guard for JSON-RPC error payloads. */
 function isJsonRpcError(value: unknown): value is JsonRpcError {
   return (
     isJsonObject(value) &&
@@ -73,6 +81,9 @@ function isJsonRpcError(value: unknown): value is JsonRpcError {
   );
 }
 
+/**
+ * Child-process-backed JSON-RPC client for Codex app-server.
+ */
 export class CodexAppServerProcess extends EventEmitter {
   private readonly command: string;
   private readonly args: string[];
@@ -82,6 +93,7 @@ export class CodexAppServerProcess extends EventEmitter {
   private readonly pendingRequests = new Map<JsonRpcId, PendingRequest>();
   private initialized = false;
 
+  /** Creates a process wrapper for the Codex app-server command. */
   public constructor(command: string, args: string[] = [], options: CodexAppServerProcessOptions = {}) {
     super();
     this.command = command;
@@ -89,10 +101,12 @@ export class CodexAppServerProcess extends EventEmitter {
     this.options = options;
   }
 
+  /** Returns true when child process is running and not killed. */
   public get isRunning(): boolean {
     return Boolean(this.childProcess && !this.childProcess.killed);
   }
 
+  /** Starts the app-server child process and wires stdin/stdout/stderr handlers. */
   public start(): void {
     if (this.childProcess) {
       return;
@@ -143,6 +157,7 @@ export class CodexAppServerProcess extends EventEmitter {
     });
   }
 
+  /** Initializes JSON-RPC session and emits initialized notification once. */
   public async initialize(params: InitializeParams, requestOptions: RequestOptions = {}): Promise<unknown> {
     if (this.initialized) {
       return undefined;
@@ -154,11 +169,13 @@ export class CodexAppServerProcess extends EventEmitter {
     return result;
   }
 
+  /** Sends a fire-and-forget JSON-RPC notification. */
   public sendNotification(method: string, params?: JsonObject): void {
     const payload: JsonRpcNotification = params ? { method, params } : { method };
     this.send(payload);
   }
 
+  /** Sends a JSON-RPC request and resolves when response is received. */
   public request<T = unknown>(method: string, params?: JsonObject, options: RequestOptions = {}): Promise<T> {
     if (!this.childProcess || this.childProcess.killed) {
       throw new Error("Codex app server process is not running");
@@ -190,14 +207,17 @@ export class CodexAppServerProcess extends EventEmitter {
     });
   }
 
+  /** Sends a JSON-RPC success response payload. */
   public respondSuccess(id: JsonRpcId, result: unknown = {}): void {
     this.send({ id, result });
   }
 
+  /** Sends a JSON-RPC error response payload. */
   public respondError(id: JsonRpcId, error: JsonRpcError): void {
     this.send({ id, error });
   }
 
+  /** Sends raw JSON-RPC payload to the child-process stdin stream. */
   public send(payload: JsonObject): void {
     if (!this.childProcess || this.childProcess.killed) {
       throw new Error("Codex app server process is not running");
@@ -210,6 +230,7 @@ export class CodexAppServerProcess extends EventEmitter {
     this.childProcess.stdin.write(`${JSON.stringify(wirePayload)}\n`);
   }
 
+  /** Stops the child process using the provided signal. */
   public stop(signal: NodeJS.Signals = "SIGTERM"): void {
     if (!this.childProcess || this.childProcess.killed) {
       return;
@@ -218,6 +239,7 @@ export class CodexAppServerProcess extends EventEmitter {
     this.childProcess.kill(signal);
   }
 
+  /** Routes incoming JSON-RPC messages into response/request/notification handlers. */
   private handleIncomingMessage(message: JsonObject): void {
     this.emit("message", message);
 
@@ -261,6 +283,7 @@ export class CodexAppServerProcess extends EventEmitter {
     }
   }
 
+  /** Resolves a pending request for successful JSON-RPC responses. */
   private handleRpcSuccessResponse(response: JsonRpcSuccessResponse): void {
     const pendingRequest = this.pendingRequests.get(response.id);
     if (!pendingRequest) {
@@ -276,6 +299,7 @@ export class CodexAppServerProcess extends EventEmitter {
     this.emit("response", response.id, response.result);
   }
 
+  /** Rejects a pending request for errored JSON-RPC responses. */
   private handleRpcErrorResponse(response: JsonRpcErrorResponse): void {
     const pendingRequest = this.pendingRequests.get(response.id);
     if (!pendingRequest) {
@@ -292,6 +316,7 @@ export class CodexAppServerProcess extends EventEmitter {
     this.emit("rpcError", response.id, response.error);
   }
 
+  /** Rejects all pending requests when the process exits or errors. */
   private rejectAllPendingRequests(error: Error): void {
     for (const [id, pendingRequest] of this.pendingRequests.entries()) {
       if (pendingRequest.timeout) {
@@ -303,66 +328,82 @@ export class CodexAppServerProcess extends EventEmitter {
     }
   }
 
+  /** Convenience wrapper for `thread/start`. */
   public threadStart(params: JsonObject = {}): Promise<unknown> {
     return this.request("thread/start", params);
   }
 
+  /** Convenience wrapper for `thread/resume`. */
   public threadResume(params: JsonObject): Promise<unknown> {
     return this.request("thread/resume", params);
   }
 
+  /** Convenience wrapper for `thread/list`. */
   public threadList(params: JsonObject = {}): Promise<unknown> {
     return this.request("thread/list", params);
   }
 
+  /** Convenience wrapper for `thread/read`. */
   public threadRead(params: JsonObject): Promise<unknown> {
     return this.request("thread/read", params);
   }
 
+  /** Convenience wrapper for `thread/archive`. */
   public threadArchive(params: JsonObject): Promise<unknown> {
     return this.request("thread/archive", params);
   }
 
+  /** Convenience wrapper for `thread/unarchive`. */
   public threadUnarchive(params: JsonObject): Promise<unknown> {
     return this.request("thread/unarchive", params);
   }
 
+  /** Convenience wrapper for `thread/compact/start`. */
   public threadCompactStart(params: JsonObject): Promise<unknown> {
     return this.request("thread/compact/start", params);
   }
 
+  /** Convenience wrapper for `thread/rollback`. */
   public threadRollback(params: JsonObject): Promise<unknown> {
     return this.request("thread/rollback", params);
   }
 
+  /** Convenience wrapper for `turn/start`. */
   public turnStart(params: JsonObject): Promise<unknown> {
     return this.request("turn/start", params);
   }
 
+  /** Convenience wrapper for `turn/steer`. */
   public turnSteer(params: JsonObject): Promise<unknown> {
     return this.request("turn/steer", params);
   }
 
+  /** Convenience wrapper for `turn/interrupt`. */
   public turnInterrupt(params: JsonObject): Promise<unknown> {
     return this.request("turn/interrupt", params);
   }
 
+  /** Convenience wrapper for `review/start`. */
   public reviewStart(params: JsonObject): Promise<unknown> {
     return this.request("review/start", params);
   }
 
+  /** Convenience wrapper for `command/exec`. */
   public commandExec(params: JsonObject): Promise<unknown> {
     return this.request("command/exec", params);
   }
 
+  /** Convenience wrapper for `model/list`. */
   public modelList(params: JsonObject = {}): Promise<unknown> {
     return this.request("model/list", params);
   }
 
+  /** Convenience wrapper for `account/read`. */
   public accountRead(params: JsonObject = {}): Promise<unknown> {
     return this.request("account/read", params);
   }
 
+  /** Convenience wrapper for `account/login/start`. */
   public accountLoginStart(params: JsonObject): Promise<unknown> {
     return this.request("account/login/start", params);
   }

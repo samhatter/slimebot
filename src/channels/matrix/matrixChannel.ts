@@ -1,7 +1,33 @@
+/**
+ * @fileoverview Matrix channel implementation for Slimebot.
+ */
+
 import { LogService, MatrixClient } from "matrix-bot-sdk";
 import type { MatrixConfig } from "./config.js";
-import { Channel, ChannelMessage, type ChannelOutboundMessage } from "../channel.js";
+import {
+  Channel,
+  ChannelMessage,
+  type ChannelApprovalRequest,
+  ChannelOutboundMessage,
+  type ChannelThreadStatusView,
+  type ChannelToolActivityCompleted,
+  type ChannelToolActivityStarted
+} from "../channel.js";
+import {
+  formatApprovalRequest,
+  formatCompactionCompleted,
+  formatHelp,
+  formatJsonResponse,
+  formatModelList,
+  formatThreadList,
+  formatThreadStatus,
+  formatToolActivityCompleted,
+  formatToolActivityStarted
+} from "./matrixFormatting.js";
 
+/**
+ * Matrix-backed channel that maps high-level controller responses to Matrix messages.
+ */
 export class MatrixChannel extends Channel {
   private readonly matrixClient: MatrixClient;
   private readonly processStartMs = Date.now();
@@ -12,24 +38,86 @@ export class MatrixChannel extends Channel {
     this.matrixClient = new MatrixClient(config.homeserverUrl, config.accessToken);
   }
 
+  /** Starts Matrix client sync and registers message/invite handlers. */
   public async start(): Promise<void> {
     this.registerEventHandlers();
     await this.matrixClient.start();
     LogService.info("matrix-runner", "Matrix channel started");
   }
 
-  public async sendTextMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
-    await this.sendMessage(roomId, "m.text", message);
+  public async sendSystemMessage(roomId: string, body: string): Promise<void> {
+    await this.sendPlainText(roomId, body);
   }
 
-  public async sendNoticeMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
-    await this.sendMessage(roomId, "m.notice", message);
+  /** Sends a direct Codex assistant reply. */
+  public async sendCodexReply(roomId: string, body: string): Promise<void> {
+    await this.sendPlainText(roomId, body);
   }
 
-  public async sendRichTextMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
-    await this.sendMessage(roomId, "m.text", message);
+  public async sendHelp(roomId: string, lines: string[]): Promise<void> {
+    const formattedHelp = formatHelp(lines);
+    await this.sendHtmlText(roomId, formattedHelp.body, formattedHelp.formattedBody);
   }
 
+  public async sendThreadList(roomId: string, result: unknown, archived: boolean): Promise<void> {
+    const formattedThreadList = formatThreadList(result, archived);
+    await this.sendHtmlText(roomId, formattedThreadList.body, formattedThreadList.formattedBody);
+  }
+
+  public async sendThreadStatus(roomId: string, input: ChannelThreadStatusView): Promise<void> {
+    const formattedStatus = formatThreadStatus(input);
+    await this.sendHtmlText(roomId, formattedStatus.body, formattedStatus.formattedBody);
+  }
+
+  public async sendModelList(roomId: string, result: unknown): Promise<void> {
+    const formattedModelList = formatModelList(result);
+    await this.sendHtmlText(roomId, formattedModelList.body, formattedModelList.formattedBody);
+  }
+
+  public async sendJsonResponse(roomId: string, title: string, value: unknown): Promise<void> {
+    const response = formatJsonResponse(title, value);
+    await this.sendHtmlText(roomId, response.body, response.formattedBody);
+  }
+
+  public async sendApprovalRequest(roomId: string, request: ChannelApprovalRequest): Promise<void> {
+    const formattedApproval = formatApprovalRequest(request);
+    await this.sendHtmlText(roomId, formattedApproval.body, formattedApproval.formattedBody);
+  }
+
+  public async sendToolActivityStarted(roomId: string, activity: ChannelToolActivityStarted): Promise<void> {
+    const formattedToolStart = formatToolActivityStarted(activity);
+    await this.sendHtmlText(roomId, formattedToolStart.body, formattedToolStart.formattedBody);
+  }
+
+  public async sendToolActivityCompleted(roomId: string, activity: ChannelToolActivityCompleted): Promise<void> {
+    const formattedToolCompletion = formatToolActivityCompleted(activity);
+    await this.sendHtmlText(roomId, formattedToolCompletion.body, formattedToolCompletion.formattedBody);
+  }
+
+  public async sendCompactionCompleted(roomId: string, threadId: string, turnId?: string): Promise<void> {
+    const formattedCompaction = formatCompactionCompleted(threadId, turnId);
+    await this.sendHtmlText(roomId, formattedCompaction.body, formattedCompaction.formattedBody);
+  }
+
+  /** Sends an unformatted Matrix text message. */
+  private async sendPlainText(roomId: string, body: string): Promise<void> {
+    await this.sendMessage(roomId, "m.text", new ChannelOutboundMessage({ body }));
+  }
+
+  /** Sends a Matrix rich-text message with optional HTML body. */
+  private async sendHtmlText(roomId: string, body: string, formattedBody?: string): Promise<void> {
+    await this.sendMessage(
+      roomId,
+      "m.text",
+      new ChannelOutboundMessage({
+        body,
+        formattedBody: formattedBody?.trim() ? formattedBody : undefined,
+        format: "org.matrix.custom.html"
+      })
+    );
+  }
+
+  /** Registers inbound Matrix room event handlers. */
   private registerEventHandlers(): void {
     this.matrixClient.on("room.invite", async (roomId: string, event: unknown): Promise<void> => {
       const rawEvent = event as Record<string, unknown>;
@@ -83,6 +171,7 @@ export class MatrixChannel extends Channel {
     });
   }
 
+  /** Sends a Matrix message payload with msgtype and optional rich formatting. */
   private async sendMessage(
     roomId: string,
     msgtype: "m.text" | "m.notice",
@@ -106,6 +195,9 @@ export class MatrixChannel extends Channel {
     await this.sendMessageWithRateLimitRetry(roomId, payload);
   }
 
+  /**
+   * Sends a Matrix message with retries when homeserver rate limits are returned.
+   */
   private async sendMessageWithRateLimitRetry(
     roomId: string,
     payload: {
@@ -144,6 +236,7 @@ export class MatrixChannel extends Channel {
     }
   }
 
+  /** Extracts retry delay from Matrix M_LIMIT_EXCEEDED errors, if present. */
   private getMatrixRetryAfterMs(error: unknown): number | undefined {
     if (typeof error !== "object" || error === null) {
       return undefined;
@@ -174,6 +267,7 @@ export class MatrixChannel extends Channel {
     return 1000;
   }
 
+  /** Sleeps for a duration to implement retry backoff. */
   private async sleep(delayMs: number): Promise<void> {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, delayMs);

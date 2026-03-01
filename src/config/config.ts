@@ -1,3 +1,7 @@
+/**
+ * @fileoverview App-level configuration loading and parsing composition.
+ */
+
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
@@ -12,6 +16,7 @@ export type AppConfig = {
   codex: CodexAppServerConfig;
 };
 
+/** Loads and parses app config from YAML on disk. */
 export function loadAppConfig(configPath?: string): AppConfig {
   const resolvedPath = resolve(configPath ?? process.env.SLIMEBOT_CONFIG_PATH ?? "slimebot.yaml");
   const yamlText = readFileSync(resolvedPath, "utf8");

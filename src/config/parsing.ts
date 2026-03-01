@@ -1,5 +1,10 @@
+/**
+ * @fileoverview Shared parsing helpers for config value extraction and validation.
+ */
+
 export type JsonRecord = Record<string, unknown>;
 
+/** Safely narrows an unknown value to a JSON object record. */
 export function asRecord(value: unknown): JsonRecord | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
@@ -8,6 +13,7 @@ export function asRecord(value: unknown): JsonRecord | undefined {
   return value as JsonRecord;
 }
 
+/** Reads an optional string value from a record and trims whitespace. */
 export function optionalString(record: JsonRecord, key: string): string | undefined {
   const value = record[key];
   if (value === undefined || value === null) {
@@ -22,6 +28,7 @@ export function optionalString(record: JsonRecord, key: string): string | undefi
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** Reads a required string value from a record. */
 export function requiredString(record: JsonRecord, key: string): string {
   const value = optionalString(record, key);
   if (!value) {
@@ -31,6 +38,7 @@ export function requiredString(record: JsonRecord, key: string): string {
   return value;
 }
 
+/** Reads a string array from a record with validation and defaults. */
 export function readStringArray(record: JsonRecord, key: string, defaultValue: string[]): string[] {
   const value = record[key];
   if (value === undefined || value === null) {

@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Codex app-server process configuration models and parsing helpers.
+ */
+
 import {
   asRecord,
   optionalString,
@@ -10,6 +14,7 @@ export type CodexAppServerConfig = {
   args: string[];
 };
 
+/** Parses Codex process config from root app config with defaults. */
 export function parseCodexAppServerConfig(root: JsonRecord): CodexAppServerConfig {
   const codexRecord = asRecord(root["codex"]) ?? {};
 

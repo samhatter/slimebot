@@ -1,6 +1,10 @@
+/**
+ * @fileoverview Main bot orchestration controller that bridges channel events
+ * and Codex app-server interactions.
+ */
+
 import { resolve } from "node:path";
 import {
-  ChannelOutboundMessage,
   type Channel
 } from "../channels/channel.js";
 import { createChannel } from "../channels/index.js";
@@ -12,10 +16,8 @@ import {
   type ControllerCommand,
   parseControllerCommand
 } from "./commands.js";
-import { formatJsonResponse, formatModelList, formatThreadList, formatThreadStatus } from "./controllerFormatting.js";
 import {
   describeToolLikeItem,
-  escapeHtml,
   extractThreadDefaultEffort,
   extractToolEventSnapshot,
   getRedirectUriFromAuthUrl,
@@ -23,8 +25,7 @@ import {
   normalizeCallbackUrl,
   readStringFromAny,
   shouldIgnoreCodexLogLine,
-  stringifyJson,
-  toJsonSnippet
+  stringifyJson
 } from "./controllerUtils.js";
 import { loadPersistedRoomThreadRoutes, persistRoomThreadRoutes } from "./routingPersistence.js";
 
@@ -69,10 +70,14 @@ export class BotController {
   private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
   private readonly selectedModelByThreadId = new Map<string, string>();
   private readonly tokenUsageByThreadId = new Map<string, ThreadTokenUsage>();
+  private readonly configuredModelByThreadId = new Map<string, string>();
   private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
+  /**
+   * Creates a controller with channel + optional Codex process wiring.
+   */
   public constructor(appConfig: AppConfig) {
     this.channel = createChannel(appConfig.channel);
     this.routingPersistencePath = resolve(appConfig.controller.routingPersistencePath);
@@ -83,6 +88,9 @@ export class BotController {
     }
   }
 
+  /**
+   * Starts bot orchestration, restores persisted mappings, and starts the channel.
+   */
   public async start(): Promise<void> {
     this.registerChannelEventHandlers();
 
@@ -100,6 +108,7 @@ export class BotController {
     this.logInfo("Bot runner started");
   }
 
+  /** Registers process signal handlers to stop the Codex app server cleanly. */
   private registerShutdownHandlers(): void {
     const shutdown = (): void => {
       this.codexAppServer?.stop("SIGTERM");
@@ -109,6 +118,7 @@ export class BotController {
     process.once("SIGTERM", shutdown);
   }
 
+  /** Registers inbound channel message handling and command routing. */
   private registerChannelEventHandlers(): void {
     this.channel.onMessage(async ({ roomId, sender, body, originServerTs }) => {
       const command = parseControllerCommand(body);
@@ -131,6 +141,7 @@ export class BotController {
     });
   }
 
+  /** Registers Codex app-server event and request handlers. */
   private registerCodexEventHandlers(): void {
     if (!this.codexAppServer) {
       return;
@@ -171,7 +182,7 @@ export class BotController {
       }
 
       try {
-        await this.sendTextMessage(replyMessage.roomId, replyMessage.body);
+        await this.channel.sendCodexReply(replyMessage.roomId, replyMessage.body);
       } catch (error) {
         this.logWarn(`Failed to send Codex reply to room ${replyMessage.roomId}: ${String(error)}`);
       }
@@ -201,8 +212,8 @@ export class BotController {
     this.codexAppServer.on("notification:turn/started", (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
-      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
+      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
+      const turnId = typeof turn?.["id"] === "string" ? turn["id"] : undefined;
 
       if (!threadId || !turnId) {
         return;
@@ -215,8 +226,8 @@ export class BotController {
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
-      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
+      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
+      const turnId = typeof turn?.["id"] === "string" ? turn["id"] : undefined;
 
       if (!threadId) {
         return;
@@ -264,22 +275,12 @@ export class BotController {
 
     this.codexAppServer.on("notification:thread/tokenUsage/updated", (params: unknown) => {
       const record = asRecord(params);
-      const threadId = readStringFromAny(record?.["threadId"]);
+      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
       if (!threadId) {
         return;
       }
 
       this.updateTokenUsageForThread(threadId, record);
-    });
-
-    this.codexAppServer.on("notification:codex/event/token_count", (params: unknown) => {
-      const record = asRecord(params);
-      const threadId = readStringFromAny(record?.["conversationId"], record?.["threadId"]);
-      if (!threadId) {
-        return;
-      }
-
-      this.updateSelectedModelForThread(threadId, record);
     });
 
     this.codexAppServer.on("notification:account/rateLimits/updated", (params: unknown) => {
@@ -290,10 +291,10 @@ export class BotController {
     this.codexAppServer.on("notification:item/started", async (params: unknown) => {
       const record = asRecord(params);
       const item = asRecord(record?.["item"]);
-      const threadId = readStringFromAny(record?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"]);
-      const itemId = readStringFromAny(item?.["id"]);
-      const itemType = readStringFromAny(item?.["type"]);
+      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
+      const turnId = typeof record?.["turnId"] === "string" ? record["turnId"] : undefined;
+      const itemId = typeof item?.["id"] === "string" ? item["id"] : undefined;
+      const itemType = typeof item?.["type"] === "string" ? item["type"] : undefined;
 
       if (!threadId || !itemId || !itemType || !item) {
         return;
@@ -304,7 +305,6 @@ export class BotController {
       }
 
       const toolSnapshot = extractToolEventSnapshot(item);
-      const toolSnapshotJson = toolSnapshot ? toJsonSnippet(toolSnapshot, 1800) : undefined;
 
       const key = getToolActivityKey(threadId, itemId);
       if (this.pendingToolActivityByKey.has(key)) {
@@ -324,30 +324,19 @@ export class BotController {
         return;
       }
 
-      await this.sendRichTextMessage(
-        roomId,
-        [
-          `Tool: ${itemType}`,
-          toolSnapshotJson
-        ]
-          .filter((line): line is string => Boolean(line))
-          .join("\n"),
-        [
-          `<p><b>Tool:</b> ${escapeHtml(itemType)}</p>`,
-          toolSnapshotJson
-            ? `<pre><code>${escapeHtml(toolSnapshotJson)}</code></pre>`
-            : ""
-        ].join("")
-      );
+      await this.channel.sendToolActivityStarted(roomId, {
+        itemType,
+        snapshot: toolSnapshot
+      });
     });
 
     this.codexAppServer.on("notification:item/completed", async (params: unknown) => {
       const record = asRecord(params);
       const item = asRecord(record?.["item"]);
-      const threadId = readStringFromAny(record?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"]);
-      const itemId = readStringFromAny(item?.["id"]);
-      const itemType = readStringFromAny(item?.["type"]);
+      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
+      const turnId = typeof record?.["turnId"] === "string" ? record["turnId"] : undefined;
+      const itemId = typeof item?.["id"] === "string" ? item["id"] : undefined;
+      const itemType = typeof item?.["type"] === "string" ? item["type"] : undefined;
 
       if (!threadId || !itemId || !itemType) {
         return;
@@ -357,19 +346,7 @@ export class BotController {
         this.pendingCompactionByThreadId.delete(threadId);
         const roomIdForCompaction = this.getRoomIdByThreadId(threadId);
         if (roomIdForCompaction) {
-          await this.sendRichTextMessage(
-            roomIdForCompaction,
-            turnId
-              ? `Compaction completed for ${threadId} (turn ${turnId}).`
-              : `Compaction completed for ${threadId}.`,
-            [
-              "<b>Compaction completed</b>",
-              "<ul>",
-              `<li><b>threadId:</b> <code>${escapeHtml(threadId)}</code></li>`,
-              turnId ? `<li><b>turnId:</b> <code>${escapeHtml(turnId)}</code></li>` : "",
-              "</ul>"
-            ].join("")
-          );
+          await this.channel.sendCompactionCompleted(roomIdForCompaction, threadId, turnId);
         }
       }
 
@@ -391,25 +368,14 @@ export class BotController {
       const itemError = readStringFromAny(asRecord(item?.["error"])?.["message"], item?.["error"]);
       const completionLabel = itemError ? "Tool failed" : "Tool completed";
       const completionSnapshot = item ? extractToolEventSnapshot(item) : undefined;
-      const completionSnapshotJson = completionSnapshot ? toJsonSnippet(completionSnapshot, 1800) : undefined;
 
-      await this.sendRichTextMessage(
-        roomId,
-        [
-          `${completionLabel}: ${pendingToolActivity.itemType} (${elapsedSeconds}s)`,
-          itemError ? `error: ${itemError}` : undefined,
-          completionSnapshotJson
-        ]
-          .filter((line): line is string => Boolean(line))
-          .join("\n"),
-        [
-          `<p><b>${escapeHtml(completionLabel)}:</b> ${escapeHtml(pendingToolActivity.itemType)} (${escapeHtml(elapsedSeconds)}s)</p>`,
-          itemError ? `<p><b>error:</b> ${escapeHtml(itemError)}</p>` : "",
-          completionSnapshotJson
-            ? `<pre><code>${escapeHtml(completionSnapshotJson)}</code></pre>`
-            : ""
-        ].join("")
-      );
+      await this.channel.sendToolActivityCompleted(roomId, {
+        completionLabel,
+        itemType: pendingToolActivity.itemType,
+        elapsedSeconds,
+        itemError: itemError ?? undefined,
+        snapshot: completionSnapshot
+      });
     });
 
     this.codexAppServer.on("notification:serverRequest/resolved", (params: unknown) => {
@@ -443,6 +409,7 @@ export class BotController {
     );
   }
 
+  /** Sends user input to an active turn or starts a new turn when idle. */
   private async sendUserMessageToThread(roomId: string, threadId: string, body: string): Promise<void> {
     if (!this.codexAppServer) {
       return;
@@ -484,6 +451,11 @@ export class BotController {
         turnStartParams["effort"] = reasoningEffort;
       }
 
+      const configuredModel = this.configuredModelByThreadId.get(threadId);
+      if (configuredModel) {
+        turnStartParams["model"] = configuredModel;
+      }
+
       const result = await this.codexAppServer.turnStart(turnStartParams);
 
       const turnId = asRecord(asRecord(result)?.["turn"])?.["id"];
@@ -496,6 +468,7 @@ export class BotController {
     }
   }
 
+  /** Handles Codex approval requests and prompts the mapped room for a decision. */
   private async handleApprovalRequest(
     requestId: number | string,
     method: string,
@@ -539,37 +512,17 @@ export class BotController {
       ? (record?.["command"] as unknown[]).filter((part): part is string => typeof part === "string").join(" ")
       : "";
 
-    const approvalLines = [
-      `<b>Approval requested for ${escapeHtml(approvalType)}</b>`,
-      `<ul>`,
-      `<li><b>threadId:</b> <code>${escapeHtml(threadId)}</code></li>`,
-      `<li><b>turnId:</b> <code>${escapeHtml(turnId)}</code></li>`,
-      `<li><b>itemId:</b> <code>${escapeHtml(itemId)}</code></li>`,
-      commandPreview ? `<li><b>command:</b> <code>${escapeHtml(commandPreview)}</code></li>` : undefined,
-      reason ? `<li><b>reason:</b> ${escapeHtml(reason)}</li>` : undefined,
-      `</ul>`,
-      `<p>Reply with <code>!approve</code> (<code>!a</code>) to approve, or <code>!skip</code> (<code>!s</code>) to decline.</p>`
-    ]
-      .filter((line): line is string => typeof line === "string")
-      .join("");
-
-    await this.sendRichTextMessage(
-      roomId,
-      [
-        `Approval requested for ${approvalType}.`,
-        `threadId: ${threadId}`,
-        `turnId: ${turnId}`,
-        `itemId: ${itemId}`,
-        commandPreview ? `command: ${commandPreview}` : undefined,
-        reason ? `reason: ${reason}` : undefined,
-        "Reply with !approve (!a) to approve, or !skip (!s) to decline."
-      ]
-        .filter((line): line is string => typeof line === "string")
-        .join("\n"),
-      approvalLines
-    );
+    await this.channel.sendApprovalRequest(roomId, {
+      approvalType,
+      threadId,
+      turnId,
+      itemId,
+      commandPreview: commandPreview || undefined,
+      reason: reason || undefined
+    });
   }
 
+  /** Parses a Codex message payload into a room-scoped assistant reply. */
   private parseCodexReplyMessage(message: unknown): { roomId: string; body: string } | undefined {
     const record = asRecord(message);
     if (!record) {
@@ -609,6 +562,7 @@ export class BotController {
     return { roomId, body };
   }
 
+  /** Finds the room currently mapped to the given thread id. */
   private getRoomIdByThreadId(threadId: string): string | undefined {
     for (const [roomId, mappedThreadId] of this.roomThreadRoutes.entries()) {
       if (mappedThreadId === threadId) {
@@ -619,6 +573,7 @@ export class BotController {
     return undefined;
   }
 
+  /** Dispatches parsed commands to their concrete handler methods. */
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
     switch (command.name) {
       case "help":
@@ -663,6 +618,9 @@ export class BotController {
       case "models":
         await this.handleModelsCommand(roomId);
         return;
+      case "model":
+        await this.handleModelCommand(roomId, command);
+        return;
       case "account":
         await this.handleAccountCommand(roomId, command);
         return;
@@ -674,6 +632,7 @@ export class BotController {
     }
   }
 
+  /** Sends command help text for supported bot commands. */
   private async handleHelpCommand(roomId: string): Promise<void> {
     const lines = [
       "Available commands:",
@@ -692,28 +651,15 @@ export class BotController {
       "- !login: Start ChatGPT login flow",
       "- !callback <full-callback-url>: Complete login callback",
       "- !models: List available models",
+      "- !model <modelId> [threadId]: Set selected model for subsequent turns (!m)",
       "- !account [ratelimits]: Show account information or latest rate limits",
       "- !reasoning [off|low|medium|high] [threadId]: Show or set reasoning per thread (!r)"
     ];
 
-    const formattedBody = [
-      "<b>Available commands</b>",
-      "<ul>",
-      ...lines.slice(1).map((line) => {
-        const [command, ...descriptionParts] = line.slice(2).split(":");
-        const description = descriptionParts.join(":").trim();
-        return `<li><code>${escapeHtml(command.trim())}</code>: ${escapeHtml(description)}</li>`;
-      }),
-      "</ul>"
-    ].join("");
-
-    await this.sendRichTextMessage(
-      roomId,
-      lines.join("\n"),
-      formattedBody
-    );
+    await this.channel.sendHelp(roomId, lines);
   }
 
+  /** Creates a new thread and maps it to the current room. */
   private async handleNewCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -749,6 +695,7 @@ export class BotController {
     }
   }
 
+  /** Resumes an existing thread and maps it to the current room. */
   private async handleResumeCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -785,6 +732,7 @@ export class BotController {
     }
   }
 
+  /** Handles thread subcommands like list and status. */
   private async handleThreadCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -803,8 +751,7 @@ export class BotController {
           sortKey: "updated_at",
           archived
         });
-        const formattedThreadList = formatThreadList(result, archived);
-        await this.sendRichTextMessage(roomId, formattedThreadList.body, formattedThreadList.formattedBody);
+        await this.channel.sendThreadList(roomId, result, archived);
       } catch (error) {
         await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
         this.logWarn(`Failed to list threads: ${String(error)}`);
@@ -822,8 +769,7 @@ export class BotController {
         const result = await this.codexAppServer.threadRead({ threadId });
         const threadRecord = asRecord(asRecord(result)?.["thread"]);
         if (!threadRecord) {
-          const threadStatusResponse = formatJsonResponse("Thread status response", result);
-          await this.sendRichTextMessage(roomId, threadStatusResponse.body, threadStatusResponse.formattedBody);
+          await this.channel.sendJsonResponse(roomId, "Thread status response", result);
           return;
         }
 
@@ -832,6 +778,8 @@ export class BotController {
         const updatedAt = readStringFromAny(threadRecord["updatedAt"], threadRecord["createdAt"]) ?? "-";
         const modelProvider = readStringFromAny(threadRecord["modelProvider"]) ?? "-";
         const selectedModel =
+          this.configuredModelByThreadId.get(threadId)
+          ??
           readStringFromAny(
             threadRecord["model"],
             asRecord(threadRecord["settings"])?.["model"],
@@ -854,7 +802,7 @@ export class BotController {
         const lastOutputTokens = tokenUsage?.lastOutputTokens;
         const lastTotalTokens = tokenUsage?.lastTotalTokens;
 
-        const formattedStatus = formatThreadStatus({
+        await this.channel.sendThreadStatus(roomId, {
           threadId,
           name,
           preview,
@@ -873,8 +821,6 @@ export class BotController {
           archived,
           defaultEffort
         });
-
-        await this.sendRichTextMessage(roomId, formattedStatus.body, formattedStatus.formattedBody);
       } catch (error) {
         await this.sendTextMessage(roomId, `Failed to read thread ${threadId}: ${String(error)}`);
         this.logWarn(`Failed to read thread ${threadId}: ${String(error)}`);
@@ -885,6 +831,7 @@ export class BotController {
     await this.sendTextMessage(roomId, "Usage: !thread <list|status> [args]");
   }
 
+  /** Rolls back turns for a thread by a requested number of turns. */
   private async handleRollbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -910,6 +857,7 @@ export class BotController {
     }
   }
 
+  /** Starts context compaction for a thread when not already in progress. */
   private async handleCompactCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -938,6 +886,7 @@ export class BotController {
     }
   }
 
+  /** Archives the target thread. */
   private async handleArchiveCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -958,6 +907,7 @@ export class BotController {
     }
   }
 
+  /** Unarchives the target thread. */
   private async handleUnarchiveCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -978,6 +928,7 @@ export class BotController {
     }
   }
 
+  /** Requests interruption of the currently in-flight turn for a thread. */
   private async handleInterruptCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -1013,6 +964,7 @@ export class BotController {
     }
   }
 
+  /** Sends accept/decline decisions for pending approval requests. */
   private async handleApprovalDecisionCommand(roomId: string, decision: "accept" | "decline"): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -1051,6 +1003,7 @@ export class BotController {
     );
   }
 
+  /** Lists available models from Codex and sends formatted output. */
   private async handleModelsCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -1058,15 +1011,44 @@ export class BotController {
     }
 
     try {
-      const result = await this.codexAppServer.modelList({});
-      const formattedModelList = formatModelList(result);
-      await this.sendRichTextMessage(roomId, formattedModelList.body, formattedModelList.formattedBody);
+      const result = await this.codexAppServer.modelList({ includeHidden: true });
+      await this.channel.sendModelList(roomId, result);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to list models: ${String(error)}`);
       this.logWarn(`Failed to list models: ${String(error)}`);
     }
   }
 
+  /** Sets the active model for subsequent turns on a thread. */
+  private async handleModelCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const modelId = command.args[0]?.trim();
+    if (!modelId) {
+      await this.sendTextMessage(roomId, "Usage: !model <modelId> [threadId]");
+      return;
+    }
+
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[1]?.trim(), "!model <modelId> [threadId]");
+    if (!threadId) {
+      return;
+    }
+
+    try {
+      await this.codexAppServer.threadResume({ threadId, model: modelId });
+      this.configuredModelByThreadId.set(threadId, modelId);
+      this.selectedModelByThreadId.set(threadId, modelId);
+      await this.sendTextMessage(roomId, `Set model for ${threadId} to ${modelId}.`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to set model for ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to set model for ${threadId}: ${String(error)}`);
+    }
+  }
+
+  /** Handles account read and account rate-limit subcommands. */
   private async handleAccountCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -1083,21 +1065,20 @@ export class BotController {
         return;
       }
 
-      const rateLimitResponse = formatJsonResponse("Account rate limits", this.latestAccountRateLimits);
-      await this.sendRichTextMessage(roomId, rateLimitResponse.body, rateLimitResponse.formattedBody);
+      await this.channel.sendJsonResponse(roomId, "Account rate limits", this.latestAccountRateLimits);
       return;
     }
 
     try {
       const result = await this.codexAppServer.accountRead({});
-      const accountResponse = formatJsonResponse("Account response", result);
-      await this.sendRichTextMessage(roomId, accountResponse.body, accountResponse.formattedBody);
+      await this.channel.sendJsonResponse(roomId, "Account response", result);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
       this.logWarn(`Failed to read account: ${String(error)}`);
     }
   }
 
+  /** Shows or updates per-thread reasoning effort settings. */
   private async handleReasoningCommand(roomId: string, command: ControllerCommand): Promise<void> {
     const usage = "!reasoning [off|low|medium|high] [threadId]";
     const firstArg = command.args[0]?.trim();
@@ -1173,6 +1154,7 @@ export class BotController {
     await this.sendTextMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
   }
 
+  /** Starts the ChatGPT login flow and stores callback context for completion. */
   private async handleLoginCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -1203,6 +1185,7 @@ export class BotController {
     }
   }
 
+  /** Accepts callback URL input and triggers login callback inside the runtime. */
   private async handleCallbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
@@ -1246,6 +1229,7 @@ export class BotController {
     }
   }
 
+  /** Initializes Codex app-server protocol capabilities. */
   private async initializeCodexAppServer(): Promise<void> {
     if (!this.codexAppServer) {
       return;
@@ -1268,6 +1252,7 @@ export class BotController {
     }
   }
 
+  /** Restores persisted room-thread mappings by resuming each mapped thread. */
   private async restoreRoomThreadRoutes(): Promise<void> {
     if (!this.codexAppServer || this.roomThreadRoutes.size === 0) {
       return;
@@ -1284,6 +1269,7 @@ export class BotController {
     }
   }
 
+  /** Resolves a command thread id argument or falls back to the room mapping. */
   private resolveThreadIdForCommand(roomId: string, threadIdArg: string | undefined, usage: string): string | undefined {
     const threadId = threadIdArg || this.roomThreadRoutes.get(roomId);
     if (threadId) {
@@ -1294,6 +1280,7 @@ export class BotController {
     return undefined;
   }
 
+  /** Updates in-memory token usage stats for a thread from payload data. */
   private updateTokenUsageForThread(threadId: string, payload: unknown): void {
     const record = asRecord(payload);
     const tokenUsageRecord = asRecord(record?.["tokenUsage"]);
@@ -1321,22 +1308,14 @@ export class BotController {
     });
   }
 
+  /** Updates in-memory selected model state for a thread from payload data. */
   private updateSelectedModelForThread(threadId: string, payload: unknown): void {
     const record = asRecord(payload);
-    const messageRecord = asRecord(record?.["msg"]);
-    const rateLimitsRecord = asRecord(record?.["rateLimits"]);
-    const messageRateLimitsRecord = asRecord(messageRecord?.["rate_limits"]);
     const turnRecord = asRecord(record?.["turn"]);
-    const threadRecord = asRecord(record?.["thread"]);
     const model = readStringFromAny(
       record?.["toModel"],
       record?.["model"],
-      rateLimitsRecord?.["limitName"],
-      messageRateLimitsRecord?.["limit_name"],
-      turnRecord?.["model"],
-      asRecord(turnRecord?.["settings"])?.["model"],
-      threadRecord?.["model"],
-      asRecord(threadRecord?.["settings"])?.["model"]
+      turnRecord?.["model"]
     );
 
     if (model) {
@@ -1344,6 +1323,7 @@ export class BotController {
     }
   }
 
+  /** Clears pending tool activity entries for a thread and optional turn. */
   private clearPendingToolActivity(threadId: string, turnId?: string): void {
     for (const [key, pendingToolActivity] of this.pendingToolActivityByKey.entries()) {
       if (pendingToolActivity.threadId !== threadId) {
@@ -1358,6 +1338,7 @@ export class BotController {
     }
   }
 
+  /** Loads persisted room-thread routes into in-memory state. */
   private loadRoomThreadRoutes(): void {
     const persistedRoutes = loadPersistedRoomThreadRoutes(
       this.routingPersistencePath,
@@ -1369,33 +1350,27 @@ export class BotController {
     }
   }
 
+  /** Persists current room-thread routes to disk. */
   private persistRoomThreadRoutes(): void {
     persistRoomThreadRoutes(this.routingPersistencePath, this.roomThreadRoutes, this.logWarn.bind(this));
   }
 
+  /** Sends a system/status message to a room through the active channel. */
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
-    await this.channel.sendTextMessage(roomId, new ChannelOutboundMessage({ body }));
+    await this.channel.sendSystemMessage(roomId, body);
   }
 
-  private async sendRichTextMessage(roomId: string, body: string, formattedBody?: string): Promise<void> {
-    await this.channel.sendRichTextMessage(
-      roomId,
-      new ChannelOutboundMessage({
-        body,
-        formattedBody: formattedBody?.trim() ? formattedBody : undefined,
-        format: "org.matrix.custom.html"
-      })
-    );
-  }
-
+  /** Writes info-level controller logs. */
   private logInfo(message: string): void {
     console.info("[slimebot]", message);
   }
 
+  /** Writes warning-level controller logs. */
   private logWarn(message: string): void {
     console.warn("[slimebot]", message);
   }
 
+  /** Writes error-level controller logs. */
   private logError(message: string): void {
     console.error("[slimebot]", message);
   }
