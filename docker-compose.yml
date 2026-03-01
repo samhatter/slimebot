@@ -1,0 +1,11 @@
+services:
+  slimebot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: slimebot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./workspace:/var/lib/slimebot/workspace
