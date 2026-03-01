@@ -190,7 +190,7 @@ export class CodexAppServerProcess extends EventEmitter {
     });
   }
 
-  public respondSuccess(id: JsonRpcId, result: JsonObject = {}): void {
+  public respondSuccess(id: JsonRpcId, result: unknown = {}): void {
     this.send({ id, result });
   }
 
@@ -317,6 +317,22 @@ export class CodexAppServerProcess extends EventEmitter {
 
   public threadRead(params: JsonObject): Promise<unknown> {
     return this.request("thread/read", params);
+  }
+
+  public threadArchive(params: JsonObject): Promise<unknown> {
+    return this.request("thread/archive", params);
+  }
+
+  public threadUnarchive(params: JsonObject): Promise<unknown> {
+    return this.request("thread/unarchive", params);
+  }
+
+  public threadCompactStart(params: JsonObject): Promise<unknown> {
+    return this.request("thread/compact/start", params);
+  }
+
+  public threadRollback(params: JsonObject): Promise<unknown> {
+    return this.request("thread/rollback", params);
   }
 
   public turnStart(params: JsonObject): Promise<unknown> {

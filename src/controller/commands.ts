@@ -3,6 +3,30 @@ export type ControllerCommand = {
   args: string[];
 };
 
+const commandAliases: Record<string, string> = {
+  i: "interrupt",
+  a: "approve",
+  s: "skip"
+};
+
+const supportedCommands = new Set<string>([
+  "help",
+  "new",
+  "resume",
+  "threads",
+  "rollback",
+  "compact",
+  "archive",
+  "unarchive",
+  "interrupt",
+  "approve",
+  "skip",
+  "login",
+  "callback",
+  "models",
+  "account"
+]);
+
 export function parseControllerCommand(body: string): ControllerCommand | undefined {
   const trimmed = body.trim();
   if (!trimmed) {
@@ -15,15 +39,8 @@ export function parseControllerCommand(body: string): ControllerCommand | undefi
   }
 
   const firstToken = tokens[0].startsWith("!") ? tokens[0].slice(1) : tokens[0];
-  const commandName = firstToken.toLowerCase();
-  if (
-    commandName !== "help" &&
-    commandName !== "new" &&
-    commandName !== "login" &&
-    commandName !== "callback" &&
-    commandName !== "models" &&
-    commandName !== "account"
-  ) {
+  const commandName = commandAliases[firstToken.toLowerCase()] ?? firstToken.toLowerCase();
+  if (!supportedCommands.has(commandName)) {
     return undefined;
   }
 

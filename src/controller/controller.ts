@@ -14,11 +14,22 @@ import {
   parseControllerCommand
 } from "./commands.js";
 
+type PendingApprovalRequest = {
+  requestId: number | string;
+  method: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+};
+
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
   private readonly routingPersistencePath: string;
   private readonly roomThreadRoutes = new Map<string, string>();
+  private readonly inFlightTurnByThreadId = new Map<string, string>();
+  private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
+  private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
@@ -76,19 +87,7 @@ export class BotController {
         return;
       }
 
-      try {
-        await this.codexAppServer.turnStart({
-          threadId,
-          input: [
-            {
-              type: "text",
-              text: body
-            }
-          ]
-        });
-      } catch (error) {
-        this.logWarn(`Failed to send message to Codex thread ${threadId}: ${String(error)}`);
-      }
+      await this.sendUserMessageToThread(roomId, threadId, body);
     });
   }
 
@@ -150,6 +149,174 @@ export class BotController {
       this.pendingLoginRedirectUri = undefined;
       this.loginRoomId = undefined;
     });
+
+    this.codexAppServer.on("notification:turn/started", (params: unknown) => {
+      const record = asRecord(params);
+      const turn = asRecord(record?.["turn"]);
+      const threadId = this.readStringFromAny(record?.["threadId"], turn?.["threadId"]);
+      const turnId = this.readStringFromAny(record?.["turnId"], turn?.["id"]);
+
+      if (!threadId || !turnId) {
+        return;
+      }
+
+      this.inFlightTurnByThreadId.set(threadId, turnId);
+    });
+
+    this.codexAppServer.on("notification:turn/completed", (params: unknown) => {
+      const record = asRecord(params);
+      const turn = asRecord(record?.["turn"]);
+      const threadId = this.readStringFromAny(record?.["threadId"], turn?.["threadId"]);
+      const turnId = this.readStringFromAny(record?.["turnId"], turn?.["id"]);
+
+      if (!threadId) {
+        return;
+      }
+
+      const currentTurnId = this.inFlightTurnByThreadId.get(threadId);
+      if (!currentTurnId) {
+        return;
+      }
+
+      if (!turnId || currentTurnId === turnId) {
+        this.inFlightTurnByThreadId.delete(threadId);
+      }
+    });
+
+    this.codexAppServer.on("notification:serverRequest/resolved", (params: unknown) => {
+      const record = asRecord(params);
+      const requestId = this.readStringFromAny(record?.["requestId"]);
+      if (!requestId) {
+        return;
+      }
+
+      const roomId = this.pendingApprovalRoomByRequestId.get(requestId);
+      if (!roomId) {
+        return;
+      }
+
+      this.pendingApprovalRoomByRequestId.delete(requestId);
+      this.pendingApprovalByRoomId.delete(roomId);
+    });
+
+    this.codexAppServer.on(
+      "request:item/commandExecution/requestApproval",
+      async (requestId: number | string, params: unknown) => {
+        await this.handleApprovalRequest(requestId, "item/commandExecution/requestApproval", params);
+      }
+    );
+
+    this.codexAppServer.on(
+      "request:item/fileChange/requestApproval",
+      async (requestId: number | string, params: unknown) => {
+        await this.handleApprovalRequest(requestId, "item/fileChange/requestApproval", params);
+      }
+    );
+  }
+
+  private async sendUserMessageToThread(roomId: string, threadId: string, body: string): Promise<void> {
+    if (!this.codexAppServer) {
+      return;
+    }
+
+    const inFlightTurnId = this.inFlightTurnByThreadId.get(threadId);
+    if (inFlightTurnId) {
+      try {
+        await this.codexAppServer.turnSteer({
+          threadId,
+          expectedTurnId: inFlightTurnId,
+          input: [
+            {
+              type: "text",
+              text: body
+            }
+          ]
+        });
+        return;
+      } catch (error) {
+        this.logWarn(`Failed to steer active turn ${inFlightTurnId} for thread ${threadId}: ${String(error)}`);
+        this.inFlightTurnByThreadId.delete(threadId);
+      }
+    }
+
+    try {
+      const result = await this.codexAppServer.turnStart({
+        threadId,
+        input: [
+          {
+            type: "text",
+            text: body
+          }
+        ]
+      });
+
+      const turnId = asRecord(asRecord(result)?.["turn"])?.["id"];
+      if (typeof turnId === "string" && turnId) {
+        this.inFlightTurnByThreadId.set(threadId, turnId);
+      }
+    } catch (error) {
+      this.logWarn(`Failed to send message to Codex thread ${threadId}: ${String(error)}`);
+      await this.sendTextMessage(roomId, `Failed to send message to Codex: ${String(error)}`);
+    }
+  }
+
+  private async handleApprovalRequest(
+    requestId: number | string,
+    method: string,
+    params: unknown
+  ): Promise<void> {
+    if (!this.codexAppServer) {
+      return;
+    }
+
+    const record = asRecord(params);
+    const threadId = this.readStringFromAny(record?.["threadId"]);
+    const turnId = this.readStringFromAny(record?.["turnId"]);
+    const itemId = this.readStringFromAny(record?.["itemId"]);
+
+    if (!threadId || !turnId || !itemId) {
+      this.codexAppServer.respondSuccess(requestId, { decision: "decline" });
+      return;
+    }
+
+    const roomId = this.getRoomIdByThreadId(threadId);
+    if (!roomId) {
+      this.logWarn(`Approval request ${String(requestId)} for unmapped thread ${threadId}; auto-declining.`);
+      this.codexAppServer.respondSuccess(requestId, { decision: "decline" });
+      return;
+    }
+
+    const pendingApproval: PendingApprovalRequest = {
+      requestId,
+      method,
+      threadId,
+      turnId,
+      itemId
+    };
+
+    this.pendingApprovalByRoomId.set(roomId, pendingApproval);
+    this.pendingApprovalRoomByRequestId.set(String(requestId), roomId);
+
+    const reason = this.readStringFromAny(record?.["reason"]);
+    const approvalType = method === "item/fileChange/requestApproval" ? "file change" : "command";
+    const commandPreview = Array.isArray(record?.["command"])
+      ? (record?.["command"] as unknown[]).filter((part): part is string => typeof part === "string").join(" ")
+      : "";
+
+    await this.sendTextMessage(
+      roomId,
+      [
+        `Approval requested for ${approvalType}.`,
+        `- threadId: ${threadId}`,
+        `- turnId: ${turnId}`,
+        `- itemId: ${itemId}`,
+        commandPreview ? `- command: ${commandPreview}` : undefined,
+        reason ? `- reason: ${reason}` : undefined,
+        "Reply with !approve (!a) to approve, or !skip (!s) to decline."
+      ]
+        .filter((line): line is string => typeof line === "string")
+        .join("\n")
+    );
   }
 
   private parseCodexReplyMessage(message: unknown): { roomId: string; body: string } | undefined {
@@ -202,33 +369,54 @@ export class BotController {
   }
 
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
-    if (command.name === "help") {
-      await this.handleHelpCommand(roomId);
-      return;
-    }
-
-    if (command.name === "new") {
-      await this.handleNewCommand(roomId);
-      return;
-    }
-
-    if (command.name === "login") {
-      await this.handleLoginCommand(roomId);
-      return;
-    }
-
-    if (command.name === "callback") {
-      await this.handleCallbackCommand(roomId, command);
-      return;
-    }
-
-    if (command.name === "models") {
-      await this.handleModelsCommand(roomId);
-      return;
-    }
-
-    if (command.name === "account") {
-      await this.handleAccountCommand(roomId);
+    switch (command.name) {
+      case "help":
+        await this.handleHelpCommand(roomId);
+        return;
+      case "new":
+        await this.handleNewCommand(roomId);
+        return;
+      case "resume":
+        await this.handleResumeCommand(roomId, command);
+        return;
+      case "threads":
+        await this.handleThreadsCommand(roomId, command);
+        return;
+      case "rollback":
+        await this.handleRollbackCommand(roomId, command);
+        return;
+      case "compact":
+        await this.handleCompactCommand(roomId, command);
+        return;
+      case "archive":
+        await this.handleArchiveCommand(roomId, command);
+        return;
+      case "unarchive":
+        await this.handleUnarchiveCommand(roomId, command);
+        return;
+      case "interrupt":
+        await this.handleInterruptCommand(roomId, command);
+        return;
+      case "approve":
+        await this.handleApprovalDecisionCommand(roomId, "accept");
+        return;
+      case "skip":
+        await this.handleApprovalDecisionCommand(roomId, "decline");
+        return;
+      case "login":
+        await this.handleLoginCommand(roomId);
+        return;
+      case "callback":
+        await this.handleCallbackCommand(roomId, command);
+        return;
+      case "models":
+        await this.handleModelsCommand(roomId);
+        return;
+      case "account":
+        await this.handleAccountCommand(roomId);
+        return;
+      default:
+        return;
     }
   }
 
@@ -239,6 +427,15 @@ export class BotController {
         "Available commands:",
         "- !help: Show this command list",
         "- !new: Create and map a new Codex thread for this room",
+        "- !resume <threadId>: Resume a thread and map it to this room",
+        "- !threads [archived]: List recent threads",
+        "- !rollback [numTurns] [threadId]: Roll back turns (default 1)",
+        "- !compact [threadId]: Trigger thread compaction",
+        "- !archive [threadId]: Archive a thread",
+        "- !unarchive [threadId]: Unarchive a thread",
+        "- !interrupt [threadId]: Interrupt in-flight turn (!i)",
+        "- !approve: Approve pending request in this room (!a)",
+        "- !skip: Decline pending request in this room (!s)",
         "- !login: Start ChatGPT login flow",
         "- !callback <full-callback-url>: Complete login callback",
         "- !models: List available models",
@@ -280,6 +477,212 @@ export class BotController {
       await this.sendTextMessage(roomId, `Failed to create a new thread: ${String(error)}`);
       this.logWarn(`Failed to create a new thread for room ${roomId}: ${String(error)}`);
     }
+  }
+
+  private async handleResumeCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const threadId = command.args[0]?.trim();
+    if (!threadId) {
+      await this.sendTextMessage(roomId, "Usage: !resume <threadId>");
+      return;
+    }
+
+    try {
+      const result = await this.codexAppServer.threadResume({ threadId });
+      const resumedThreadId = asRecord(asRecord(result)?.["thread"])?.["id"];
+      if (typeof resumedThreadId !== "string" || !resumedThreadId) {
+        await this.sendTextMessage(roomId, `Thread resume response missing thread.id:\n${this.stringifyJson(result)}`);
+        return;
+      }
+
+      const previousThreadId = this.roomThreadRoutes.get(roomId);
+      this.roomThreadRoutes.set(roomId, resumedThreadId);
+      this.persistRoomThreadRoutes();
+
+      await this.sendTextMessage(
+        roomId,
+        previousThreadId
+          ? `Resumed ${resumedThreadId} and remapped room (replaced ${previousThreadId}).`
+          : `Resumed ${resumedThreadId} and mapped it to this room.`
+      );
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to resume thread ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to resume thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  private async handleThreadsCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const archivedArg = command.args[0]?.toLowerCase();
+    const archived = archivedArg === "archived" || archivedArg === "true";
+
+    try {
+      const result = await this.codexAppServer.threadList({
+        limit: 20,
+        sortKey: "updated_at",
+        archived
+      });
+      await this.sendTextMessage(roomId, this.formatThreadList(result, archived));
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
+      this.logWarn(`Failed to list threads: ${String(error)}`);
+    }
+  }
+
+  private async handleRollbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const firstArg = command.args[0]?.trim();
+    const maybeNumTurns = firstArg ? Number(firstArg) : Number.NaN;
+
+    const numTurns = Number.isFinite(maybeNumTurns) && maybeNumTurns >= 1 ? Math.trunc(maybeNumTurns) : 1;
+    const threadIdArg = Number.isFinite(maybeNumTurns) ? command.args[1] : command.args[0];
+    const threadId = this.resolveThreadIdForCommand(roomId, threadIdArg?.trim(), "!rollback [numTurns] [threadId]");
+    if (!threadId) {
+      return;
+    }
+
+    try {
+      const result = await this.codexAppServer.threadRollback({ threadId, numTurns });
+      await this.sendTextMessage(roomId, `Rollback completed for ${threadId}.\n${this.stringifyJson(result)}`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to rollback thread ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to rollback thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  private async handleCompactCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[0]?.trim(), "!compact [threadId]");
+    if (!threadId) {
+      return;
+    }
+
+    try {
+      await this.codexAppServer.threadCompactStart({ threadId });
+      await this.sendTextMessage(roomId, `Started compaction for ${threadId}.`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to compact thread ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to compact thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  private async handleArchiveCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[0]?.trim(), "!archive [threadId]");
+    if (!threadId) {
+      return;
+    }
+
+    try {
+      await this.codexAppServer.threadArchive({ threadId });
+      await this.sendTextMessage(roomId, `Archived thread ${threadId}.`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to archive thread ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to archive thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  private async handleUnarchiveCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[0]?.trim(), "!unarchive [threadId]");
+    if (!threadId) {
+      return;
+    }
+
+    try {
+      const result = await this.codexAppServer.threadUnarchive({ threadId });
+      await this.sendTextMessage(roomId, `Unarchived thread ${threadId}.\n${this.stringifyJson(result)}`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to unarchive thread ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to unarchive thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  private async handleInterruptCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[0]?.trim(), "!interrupt [threadId]");
+    if (!threadId) {
+      return;
+    }
+
+    const turnId = this.inFlightTurnByThreadId.get(threadId);
+    if (!turnId) {
+      await this.sendTextMessage(roomId, `No in-flight turn found for thread ${threadId}.`);
+      return;
+    }
+
+    try {
+      await this.codexAppServer.turnInterrupt({ threadId, turnId });
+      await this.sendTextMessage(roomId, `Interrupt requested for turn ${turnId}.`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to interrupt turn ${turnId}: ${String(error)}`);
+      this.logWarn(`Failed to interrupt turn ${turnId} on thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  private async handleApprovalDecisionCommand(roomId: string, decision: "accept" | "decline"): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const pendingApproval = this.pendingApprovalByRoomId.get(roomId);
+    if (!pendingApproval) {
+      await this.sendTextMessage(roomId, "No pending approval request in this room.");
+      return;
+    }
+
+    const requestId = pendingApproval.requestId;
+    if (pendingApproval.method === "item/commandExecution/requestApproval") {
+      this.codexAppServer.respondSuccess(requestId, { decision });
+    } else if (pendingApproval.method === "item/fileChange/requestApproval") {
+      this.codexAppServer.respondSuccess(requestId, { decision });
+    } else {
+      this.codexAppServer.respondError(requestId, {
+        code: -32601,
+        message: `Unsupported approval request method: ${pendingApproval.method}`
+      });
+      this.pendingApprovalByRoomId.delete(roomId);
+      this.pendingApprovalRoomByRequestId.delete(String(requestId));
+      await this.sendTextMessage(roomId, "Pending approval request could not be handled.");
+      return;
+    }
+
+    this.pendingApprovalByRoomId.delete(roomId);
+    this.pendingApprovalRoomByRequestId.delete(String(requestId));
+
+    await this.sendTextMessage(
+      roomId,
+      decision === "accept" ? "Approval sent to Codex." : "Decline sent to Codex."
+    );
   }
 
   private async handleModelsCommand(roomId: string): Promise<void> {
@@ -424,6 +827,9 @@ export class BotController {
           name: "slimebot",
           title: "Slimebot",
           version: "0.1.0"
+        },
+        capabilities: {
+          experimentalApi: true
         }
       });
       this.logInfo("Codex app server initialized");
@@ -446,6 +852,60 @@ export class BotController {
         );
       }
     }
+  }
+
+  private resolveThreadIdForCommand(roomId: string, threadIdArg: string | undefined, usage: string): string | undefined {
+    const threadId = threadIdArg || this.roomThreadRoutes.get(roomId);
+    if (threadId) {
+      return threadId;
+    }
+
+    void this.sendTextMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
+    return undefined;
+  }
+
+  private formatThreadList(result: unknown, archived: boolean): string {
+    const record = asRecord(result);
+    const data = record?.["data"];
+    if (!Array.isArray(data) || data.length === 0) {
+      return archived ? "No archived threads found." : "No threads found.";
+    }
+
+    const lines = data
+      .slice(0, 20)
+      .map((item, index) => {
+        const entry = asRecord(item);
+        const threadId = this.readStringFromAny(entry?.["id"]) ?? "<unknown>";
+        const name = this.readStringFromAny(entry?.["name"]);
+        const preview = this.readStringFromAny(entry?.["preview"]);
+        const updatedAt = this.readStringFromAny(entry?.["updatedAt"], entry?.["createdAt"]);
+
+        return [
+          `${index + 1}. ${threadId}`,
+          name ? `   name: ${name}` : undefined,
+          preview ? `   preview: ${preview}` : undefined,
+          updatedAt ? `   updatedAt: ${updatedAt}` : undefined
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join("\n");
+      })
+      .join("\n");
+
+    return `${archived ? "Archived" : "Active"} threads:\n${lines}`;
+  }
+
+  private readStringFromAny(...values: Array<unknown>): string | undefined {
+    for (const value of values) {
+      if (typeof value === "string" && value) {
+        return value;
+      }
+
+      if (typeof value === "number") {
+        return String(value);
+      }
+    }
+
+    return undefined;
   }
 
   private loadRoomThreadRoutes(): void {
