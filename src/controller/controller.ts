@@ -22,6 +22,7 @@ import {
   getToolActivityKey,
   normalizeCallbackUrl,
   readStringFromAny,
+  shouldIgnoreCodexLogLine,
   stringifyJson,
   toJsonSnippet
 } from "./controllerUtils.js";
@@ -128,10 +129,18 @@ export class BotController {
     });
 
     this.codexAppServer.on("stdout", (line: string) => {
+      if (shouldIgnoreCodexLogLine(line)) {
+        return;
+      }
+
       this.logInfo(`[codex.stdout] ${line}`);
     });
 
     this.codexAppServer.on("stderr", (line: string) => {
+      if (shouldIgnoreCodexLogLine(line)) {
+        return;
+      }
+
       this.logWarn(`[codex.stderr] ${line}`);
     });
 

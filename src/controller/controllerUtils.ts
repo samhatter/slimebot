@@ -272,3 +272,18 @@ export function normalizeCallbackUrl(input: string, pendingLoginRedirectUri?: st
 
   return undefined;
 }
+
+export function shouldIgnoreCodexLogLine(line: string): boolean {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (typeof parsed !== "object" || parsed === null) {
+      return false;
+    }
+
+    const record = parsed as Record<string, unknown>;
+    const level = readStringFromAny(record["level"], record["severity"])?.toLowerCase();
+    return level === "delta";
+  } catch {
+    return false;
+  }
+}
