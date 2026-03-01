@@ -198,54 +198,6 @@ export class CodexAppServerProcess extends EventEmitter {
     this.send({ id, error });
   }
 
-  public threadStart(params: JsonObject = {}): Promise<unknown> {
-    return this.request("thread/start", params);
-  }
-
-  public threadResume(params: JsonObject): Promise<unknown> {
-    return this.request("thread/resume", params);
-  }
-
-  public threadList(params: JsonObject = {}): Promise<unknown> {
-    return this.request("thread/list", params);
-  }
-
-  public threadRead(params: JsonObject): Promise<unknown> {
-    return this.request("thread/read", params);
-  }
-
-  public turnStart(params: JsonObject): Promise<unknown> {
-    return this.request("turn/start", params);
-  }
-
-  public turnSteer(params: JsonObject): Promise<unknown> {
-    return this.request("turn/steer", params);
-  }
-
-  public turnInterrupt(params: JsonObject): Promise<unknown> {
-    return this.request("turn/interrupt", params);
-  }
-
-  public reviewStart(params: JsonObject): Promise<unknown> {
-    return this.request("review/start", params);
-  }
-
-  public commandExec(params: JsonObject): Promise<unknown> {
-    return this.request("command/exec", params);
-  }
-
-  public modelList(params: JsonObject = {}): Promise<unknown> {
-    return this.request("model/list", params);
-  }
-
-  public accountRead(params: JsonObject = {}): Promise<unknown> {
-    return this.request("account/read", params);
-  }
-
-  public accountLoginStart(params: JsonObject): Promise<unknown> {
-    return this.request("account/login/start", params);
-  }
-
   public send(payload: JsonObject): void {
     if (!this.childProcess || this.childProcess.killed) {
       throw new Error("Codex app server process is not running");
@@ -349,5 +301,53 @@ export class CodexAppServerProcess extends EventEmitter {
       pendingRequest.reject(error);
       this.pendingRequests.delete(id);
     }
+  }
+
+  public threadStart(params: JsonObject = {}): Promise<unknown> {
+    return this.request("thread/start", params);
+  }
+
+  public threadResume(params: JsonObject): Promise<unknown> {
+    return this.request("thread/resume", params);
+  }
+
+  public threadList(params: JsonObject = {}): Promise<unknown> {
+    return this.request("thread/list", params);
+  }
+
+  public threadRead(params: JsonObject): Promise<unknown> {
+    return this.request("thread/read", params);
+  }
+
+  public turnStart(params: JsonObject): Promise<unknown> {
+    return this.request("turn/start", params);
+  }
+
+  public turnSteer(params: JsonObject): Promise<unknown> {
+    return this.request("turn/steer", params);
+  }
+
+  public turnInterrupt(params: JsonObject): Promise<unknown> {
+    return this.request("turn/interrupt", params);
+  }
+
+  public reviewStart(params: JsonObject): Promise<unknown> {
+    return this.request("review/start", params);
+  }
+
+  public commandExec(params: JsonObject): Promise<unknown> {
+    return this.request("command/exec", params);
+  }
+
+  public modelList(params: JsonObject = {}): Promise<unknown> {
+    return this.request("model/list", params);
+  }
+
+  public accountRead(params: JsonObject = {}): Promise<unknown> {
+    return this.request("account/read", params);
+  }
+
+  public accountLoginStart(params: JsonObject): Promise<unknown> {
+    return this.request("account/login/start", params);
   }
 }

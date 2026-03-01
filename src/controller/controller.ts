@@ -1,24 +1,25 @@
-import { LogService, MatrixClient } from "matrix-bot-sdk";
-import type { AppConfig } from "./appConfig.js";
-import { CodexAppServerProcess } from "./codexAppServerProcess.js";
 import {
-  buildTableMessage,
-  flattenToRows,
-  formatCompactJson,
-  getModelsTableSpec
-} from "./commandResponseFormatters.js";
-import { type ControllerCommand, parseControllerCommand } from "./controllerCommands.js";
-import { asRecord, getAuthUrlFromLoginResult, isMatrixReplyMessage } from "./controllerParsers.js";
+  ChannelOutboundMessage,
+  type Channel
+} from "../channels/channel.js";
+import { createChannel } from "../channels/index.js";
+import type { AppConfig } from "../config/config.js";
+import { CodexAppServerProcess } from "../codexProcess/codexAppServerProcess.js";
+import {
+  asRecord,
+  getAuthUrlFromLoginResult,
+  type ControllerCommand,
+  parseControllerCommand
+} from "./commands.js";
 
 export class BotController {
-  private readonly matrixClient: MatrixClient;
+  private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
-  private readonly processStartMs = Date.now();
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
-  public constructor(private readonly appConfig: AppConfig) {
-    this.matrixClient = new MatrixClient(appConfig.matrix.homeserverUrl, appConfig.matrix.accessToken);
+  public constructor(appConfig: AppConfig) {
+    this.channel = createChannel(appConfig.channel);
 
     if (appConfig.codex.command) {
       this.codexAppServer = new CodexAppServerProcess(appConfig.codex.command, appConfig.codex.args);
@@ -26,7 +27,7 @@ export class BotController {
   }
 
   public async start(): Promise<void> {
-    this.registerMatrixEventHandlers();
+    this.registerChannelEventHandlers();
 
     if (this.codexAppServer) {
       this.registerCodexEventHandlers();
@@ -37,8 +38,8 @@ export class BotController {
     this.codexAppServer?.start();
     await this.initializeCodexAppServer();
 
-    await this.matrixClient.start();
-    LogService.info("matrix-runner", "Bot runner started");
+    await this.channel.start();
+    this.logInfo("Bot runner started");
   }
 
   private registerShutdownHandlers(): void {
@@ -50,51 +51,8 @@ export class BotController {
     process.once("SIGTERM", shutdown);
   }
 
-  private registerMatrixEventHandlers(): void {
-    this.matrixClient.on("room.invite", async (roomId: string, event: unknown): Promise<void> => {
-      const rawEvent = event as Record<string, unknown>;
-      const sender = rawEvent["sender"] as string | undefined;
-      if (!sender) {
-        LogService.info("matrix-runner", `[room.invite] ignored room=${roomId} sender=unknown`);
-        return;
-      }
-
-      if (this.appConfig.matrix.allowedInviteSender && sender !== this.appConfig.matrix.allowedInviteSender) {
-        LogService.info(
-          "matrix-runner",
-          `[room.invite] ignored room=${roomId} sender=${sender} reason=sender_not_allowed allowed=${this.appConfig.matrix.allowedInviteSender}`
-        );
-        return;
-      }
-
-      try {
-        await this.matrixClient.joinRoom(roomId);
-        LogService.info("matrix-runner", `[room.invite] joined room=${roomId} sender=${sender}`);
-      } catch (error) {
-        LogService.warn("matrix-runner", `Failed to join invited room ${roomId}: ${String(error)}`);
-      }
-    });
-
-    this.matrixClient.on("room.message", async (roomId: string, event: unknown): Promise<void> => {
-      const rawEvent = event as Record<string, unknown>;
-      const originServerTs = rawEvent["origin_server_ts"];
-      if (typeof originServerTs === "number" && originServerTs < this.processStartMs) {
-        return;
-      }
-
-      const sender = rawEvent["sender"] as string | undefined;
-      if (!sender || sender === this.appConfig.matrix.botUserId) {
-        return;
-      }
-
-      const content = rawEvent["content"] as { body?: string; msgtype?: string } | undefined;
-      if (!content || content.msgtype !== "m.text") {
-        return;
-      }
-
-      const body = content.body ?? "";
-      LogService.info("matrix-runner", `[room.message] room=${roomId} sender=${sender} body=${body}`);
-
+  private registerChannelEventHandlers(): void {
+    this.channel.onMessage(async ({ roomId, sender, body, originServerTs }) => {
       const command = parseControllerCommand(body);
       if (command) {
         await this.handleCommand(roomId, command);
@@ -114,7 +72,7 @@ export class BotController {
           originServerTs
         });
       } catch (error) {
-        LogService.warn("matrix-runner", `Failed to forward Matrix message to Codex: ${String(error)}`);
+        this.logWarn(`Failed to forward Matrix message to Codex: ${String(error)}`);
       }
     });
   }
@@ -125,40 +83,35 @@ export class BotController {
     }
 
     this.codexAppServer.on("start", (pid: number) => {
-      LogService.info("matrix-runner", `Codex app server started pid=${pid}`);
+      this.logInfo(`Codex app server started pid=${pid}`);
     });
 
     this.codexAppServer.on("stdout", (line: string) => {
-      LogService.info("matrix-runner", `[codex.stdout] ${line}`);
+      this.logInfo(`[codex.stdout] ${line}`);
     });
 
     this.codexAppServer.on("stderr", (line: string) => {
-      LogService.warn("matrix-runner", `[codex.stderr] ${line}`);
+      this.logWarn(`[codex.stderr] ${line}`);
     });
 
     this.codexAppServer.on("error", (error: Error) => {
-      LogService.error("matrix-runner", `Codex app server error: ${String(error)}`);
+      this.logError(`Codex app server error: ${String(error)}`);
     });
 
     this.codexAppServer.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
-      LogService.warn(
-        "matrix-runner",
-        `Codex app server exited code=${String(code)} signal=${String(signal)}`
-      );
+      this.logWarn(`Codex app server exited code=${String(code)} signal=${String(signal)}`);
     });
 
     this.codexAppServer.on("message", async (message: unknown) => {
-      if (!isMatrixReplyMessage(message)) {
+      const replyMessage = this.parseCodexReplyMessage(message);
+      if (!replyMessage) {
         return;
       }
 
       try {
-        await this.sendTextMessage(message.roomId, message.body);
+        await this.sendTextMessage(replyMessage.roomId, replyMessage.body);
       } catch (error) {
-        LogService.warn(
-          "matrix-runner",
-          `Failed to send Codex reply to room ${message.roomId}: ${String(error)}`
-        );
+        this.logWarn(`Failed to send Codex reply to room ${replyMessage.roomId}: ${String(error)}`);
       }
     });
 
@@ -182,6 +135,22 @@ export class BotController {
       this.pendingLoginRedirectUri = undefined;
       this.loginRoomId = undefined;
     });
+  }
+
+  private parseCodexReplyMessage(message: unknown): { roomId: string; body: string } | undefined {
+    const record = asRecord(message);
+    if (!record) {
+      return undefined;
+    }
+
+    const roomId = record["roomId"];
+    const body = record["body"];
+
+    if (typeof roomId !== "string" || typeof body !== "string") {
+      return undefined;
+    }
+
+    return { roomId, body };
   }
 
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
@@ -232,22 +201,10 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.modelList({});
-      const modelTable = getModelsTableSpec(result);
-      if (modelTable.rows.length > 0) {
-        await this.sendTableMessage(roomId, "Available models:", modelTable.headers, modelTable.rows);
-        return;
-      }
-
-      const fallbackRows = flattenToRows(result);
-      if (fallbackRows.length > 0) {
-        await this.sendTableMessage(roomId, "Model response:", ["Field", "Value"], fallbackRows);
-        return;
-      }
-
-      await this.sendTextMessage(roomId, `No models were returned. Response: ${formatCompactJson(result)}`);
+      await this.sendTextMessage(roomId, `Model response:\n${this.stringifyJson(result)}`);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to list models: ${String(error)}`);
-      LogService.warn("matrix-runner", `Failed to list models: ${String(error)}`);
+      this.logWarn(`Failed to list models: ${String(error)}`);
     }
   }
 
@@ -259,10 +216,10 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.accountRead({});
-      await this.sendJsonMessage(roomId, result);
+      await this.sendTextMessage(roomId, `Account response:\n${this.stringifyJson(result)}`);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
-      LogService.warn("matrix-runner", `Failed to read account: ${String(error)}`);
+      this.logWarn(`Failed to read account: ${String(error)}`);
     }
   }
 
@@ -292,7 +249,7 @@ export class BotController {
       );
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to start login: ${String(error)}`);
-      LogService.warn("matrix-runner", `Failed to start chatgpt login flow: ${String(error)}`);
+      this.logWarn(`Failed to start chatgpt login flow: ${String(error)}`);
     }
   }
 
@@ -335,7 +292,7 @@ export class BotController {
       }
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to trigger callback URL: ${String(error)}`);
-      LogService.warn("matrix-runner", `Failed to trigger callback URL: ${String(error)}`);
+      this.logWarn(`Failed to trigger callback URL: ${String(error)}`);
     }
   }
 
@@ -380,21 +337,10 @@ export class BotController {
           version: "0.1.0"
         }
       });
-      LogService.info("matrix-runner", "Codex app server initialized");
+      this.logInfo("Codex app server initialized");
     } catch (error) {
-      LogService.warn("matrix-runner", `Failed to initialize Codex app server: ${String(error)}`);
+      this.logWarn(`Failed to initialize Codex app server: ${String(error)}`);
     }
-  }
-
-  private async sendTableMessage(roomId: string, title: string, headers: string[], rows: string[][]): Promise<void> {
-    const message = buildTableMessage(title, headers, rows);
-
-    await this.matrixClient.sendMessage(roomId, {
-      msgtype: "m.text",
-      body: message.body,
-      format: "org.matrix.custom.html",
-      formatted_body: message.formattedBody
-    });
   }
 
   private stringifyJson(value: unknown): string {
@@ -405,32 +351,19 @@ export class BotController {
     }
   }
 
-  private async sendJsonMessage(roomId: string, value: unknown): Promise<void> {
-    const json = this.stringifyJson(value);
-    const body = ["Account JSON:", "```json", json, "```"].join("\n");
-    const formattedBody = `<p>Account JSON:</p><pre><code class="language-json">${this.escapeHtml(json)}</code></pre>`;
-
-    await this.matrixClient.sendMessage(roomId, {
-      msgtype: "m.text",
-      body,
-      format: "org.matrix.custom.html",
-      formatted_body: formattedBody
-    });
-  }
-
-  private escapeHtml(value: string): string {
-    return value
-      .replace(/&/gu, "&amp;")
-      .replace(/</gu, "&lt;")
-      .replace(/>/gu, "&gt;")
-      .replace(/"/gu, "&quot;")
-      .replace(/'/gu, "&#39;");
-  }
-
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
-    await this.matrixClient.sendMessage(roomId, {
-      msgtype: "m.text",
-      body
-    });
+    await this.channel.sendTextMessage(roomId, new ChannelOutboundMessage({ body }));
+  }
+
+  private logInfo(message: string): void {
+    console.info("[slimebot]", message);
+  }
+
+  private logWarn(message: string): void {
+    console.warn("[slimebot]", message);
+  }
+
+  private logError(message: string): void {
+    console.error("[slimebot]", message);
   }
 }

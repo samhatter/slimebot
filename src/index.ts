@@ -1,5 +1,5 @@
-import { loadAppConfig } from "./appConfig.js";
-import { BotController } from "./botController.js";
+import { loadAppConfig } from "./config/config.js";
+import { BotController } from "./controller/controller.js";
 
 async function main(): Promise<void> {
 	const appConfig = loadAppConfig();

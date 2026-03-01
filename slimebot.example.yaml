@@ -1,0 +1,17 @@
+channel:
+  type: matrix
+  matrix:
+    homeserverUrl: "https://matrix.example.com"
+    accessToken: "YOUR_MATRIX_ACCESS_TOKEN"
+    botUserId: "@slimebot:example.com"
+    allowedInviteSender: "@admin:example.com"
+
+controller:
+  commandPrefix: "!"
+
+codex:
+  command: "./node_modules/.bin/codex"
+  args:
+    - app-server
+    - --listen
+    - stdio://

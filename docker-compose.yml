@@ -7,13 +7,13 @@ services:
     restart: unless-stopped
     tty: true
     stdin_open: true
-    env_file:
-      - .env
     environment:
       HOME: /var/lib/slimebot/codex
+      SLIMEBOT_CONFIG_PATH: /app/slimebot.yaml
     volumes:
       - ./workspace:/var/lib/slimebot/workspace
       - ./codex:/var/lib/slimebot/codex
+      - ./slimebot.yaml:/app/slimebot.yaml:ro
 
 volumes:
   codex-data:

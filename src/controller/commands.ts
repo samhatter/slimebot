@@ -31,3 +31,21 @@ export function parseControllerCommand(body: string): ControllerCommand | undefi
     args: tokens.slice(1)
   };
 }
+
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+export function getAuthUrlFromLoginResult(result: unknown): string | undefined {
+  const record = asRecord(result);
+  if (!record) {
+    return undefined;
+  }
+
+  const authUrl = record["authUrl"];
+  return typeof authUrl === "string" ? authUrl : undefined;
+}
