@@ -6,7 +6,8 @@ export type ControllerCommand = {
 const commandAliases: Record<string, string> = {
   i: "interrupt",
   a: "approve",
-  s: "skip"
+  s: "skip",
+  r: "reasoning"
 };
 
 const supportedCommands = new Set<string>([
@@ -24,7 +25,8 @@ const supportedCommands = new Set<string>([
   "login",
   "callback",
   "models",
-  "account"
+  "account",
+  "reasoning"
 ]);
 
 export function parseControllerCommand(body: string): ControllerCommand | undefined {

@@ -42,6 +42,8 @@ type PendingToolActivity = {
   startedAtMs: number;
 };
 
+type ReasoningEffort = "low" | "medium" | "high";
+
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
@@ -53,6 +55,7 @@ export class BotController {
   private readonly pendingToolActivityByKey = new Map<string, PendingToolActivity>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
+  private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
@@ -420,7 +423,7 @@ export class BotController {
     }
 
     try {
-      const result = await this.codexAppServer.turnStart({
+      const turnStartParams: Record<string, unknown> = {
         threadId,
         input: [
           {
@@ -428,7 +431,14 @@ export class BotController {
             text: body
           }
         ]
-      });
+      };
+
+      const reasoningEffort = this.reasoningEffortByThreadId.get(threadId);
+      if (reasoningEffort) {
+        turnStartParams["effort"] = reasoningEffort;
+      }
+
+      const result = await this.codexAppServer.turnStart(turnStartParams);
 
       const turnId = asRecord(asRecord(result)?.["turn"])?.["id"];
       if (typeof turnId === "string" && turnId) {
@@ -610,6 +620,9 @@ export class BotController {
       case "account":
         await this.handleAccountCommand(roomId);
         return;
+      case "reasoning":
+        await this.handleReasoningCommand(roomId, command);
+        return;
       default:
         return;
     }
@@ -632,7 +645,8 @@ export class BotController {
       "- !login: Start ChatGPT login flow",
       "- !callback <full-callback-url>: Complete login callback",
       "- !models: List available models",
-      "- !account: Show account information"
+      "- !account: Show account information",
+      "- !reasoning [off|low|medium|high] [threadId]: Show or set reasoning per thread (!r)"
     ];
 
     const formattedBody = [
@@ -745,6 +759,23 @@ export class BotController {
       await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
       this.logWarn(`Failed to list threads: ${String(error)}`);
     }
+  }
+
+  private extractThreadDefaultEffort(record: Record<string, unknown> | undefined): string | undefined {
+    if (!record) {
+      return undefined;
+    }
+
+    return this.readStringFromAny(
+      record["effort"],
+      record["defaultReasoningEffort"],
+      record["reasoningEffort"],
+      asRecord(record["settings"])?.["effort"],
+      asRecord(record["settings"])?.["reasoningEffort"],
+      asRecord(record["defaultSettings"])?.["effort"],
+      asRecord(record["turnDefaults"])?.["effort"],
+      asRecord(record["config"])?.["effort"]
+    );
   }
 
   private async handleRollbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
@@ -942,6 +973,81 @@ export class BotController {
       await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
       this.logWarn(`Failed to read account: ${String(error)}`);
     }
+  }
+
+  private async handleReasoningCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    const usage = "!reasoning [off|low|medium|high] [threadId]";
+    const firstArg = command.args[0]?.trim();
+    const firstArgLower = firstArg?.toLowerCase();
+
+    if (!firstArgLower) {
+      const mappedThreadId = this.roomThreadRoutes.get(roomId);
+      if (!mappedThreadId) {
+        await this.sendTextMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
+        return;
+      }
+
+      let codexEffort: string | undefined;
+      if (this.codexAppServer) {
+        try {
+          const threadReadResult = await this.codexAppServer.threadRead({ threadId: mappedThreadId });
+          const threadRecord = asRecord(asRecord(threadReadResult)?.["thread"]);
+          const effort = this.extractThreadDefaultEffort(threadRecord);
+          if (effort) {
+            codexEffort = effort;
+          }
+        } catch (error) {
+          this.logWarn(`Failed to read thread ${mappedThreadId} for reasoning status: ${String(error)}`);
+        }
+      }
+
+      const effort = this.reasoningEffortByThreadId.get(mappedThreadId);
+      const effectiveEffort = effort ?? codexEffort ?? "default";
+      await this.sendTextMessage(
+        roomId,
+        `Effective next turn reasoning for ${mappedThreadId}: ${effectiveEffort}`
+      );
+      return;
+    }
+
+    const isValidEffort = firstArgLower === "low" || firstArgLower === "medium" || firstArgLower === "high";
+    const isOff = firstArgLower === "off";
+
+    if (!isValidEffort && !isOff) {
+      const threadId = firstArg;
+      let codexEffort: string | undefined;
+      if (this.codexAppServer) {
+        try {
+          const threadReadResult = await this.codexAppServer.threadRead({ threadId });
+          const threadRecord = asRecord(asRecord(threadReadResult)?.["thread"]);
+          codexEffort = this.extractThreadDefaultEffort(threadRecord);
+        } catch (error) {
+          this.logWarn(`Failed to read thread ${threadId} for reasoning status: ${String(error)}`);
+        }
+      }
+
+      const effort = this.reasoningEffortByThreadId.get(threadId);
+      const effectiveEffort = effort ?? codexEffort ?? "default";
+      await this.sendTextMessage(
+        roomId,
+        `Effective next turn reasoning for ${threadId}: ${effectiveEffort}`
+      );
+      return;
+    }
+
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[1]?.trim(), usage);
+    if (!threadId) {
+      return;
+    }
+
+    if (isOff) {
+      this.reasoningEffortByThreadId.delete(threadId);
+      await this.sendTextMessage(roomId, `Reasoning for ${threadId} reset to default (in-memory, not persisted).`);
+      return;
+    }
+
+    this.reasoningEffortByThreadId.set(threadId, firstArgLower);
+    await this.sendTextMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
   }
 
   private async handleLoginCommand(roomId: string): Promise<void> {
