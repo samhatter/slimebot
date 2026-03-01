@@ -1,83 +1,12 @@
-import { LogService, MatrixClient } from "matrix-bot-sdk";
-import { CodexAppServerProcess } from "./codex/codexAppServerProcess.js";
 import { loadCodexAppServerConfig } from "./codex/codexAppServerConfig.js";
-import { registerCodexAppServerHandlers } from "./codex/codexAppServerHandlers.js";
-import {
-	createMatrixRoomInviteHandler,
-	createMatrixRoomMessageHandler
-} from "./matrix/matrixClientHandlers.js";
+import { BotController } from "./controller/botController.js";
 import { loadMatrixConfig } from "./matrix/matrixConfig.js";
-
-function createCodexAppServer(command: string | undefined, args: string[]): CodexAppServerProcess | undefined {
-	if (!command) {
-		return undefined;
-	}
-
-	return new CodexAppServerProcess(command, args);
-}
-
-function registerMatrixClientHandlers(
-	client: MatrixClient,
-	matrixConfig: ReturnType<typeof loadMatrixConfig>,
-	codexAppServer: CodexAppServerProcess | undefined
-): void {
-	client.on(
-		"room.invite",
-		createMatrixRoomInviteHandler({
-			client,
-			allowedInviteSender: matrixConfig.allowedInviteSender
-		})
-	);
-
-	client.on(
-		"room.message",
-		createMatrixRoomMessageHandler({
-			botUserId: matrixConfig.botUserId,
-			codexAppServer
-		})
-	);
-}
-
-function registerShutdownHandlers(codexAppServer: CodexAppServerProcess | undefined): void {
-	const shutdownCodexServer = (): void => {
-		codexAppServer?.stop("SIGTERM");
-	};
-
-	process.once("SIGINT", shutdownCodexServer);
-	process.once("SIGTERM", shutdownCodexServer);
-}
 
 async function main(): Promise<void> {
 	const matrixConfig = loadMatrixConfig();
 	const codexConfig = loadCodexAppServerConfig();
-
-	const client = new MatrixClient(matrixConfig.homeserverUrl, matrixConfig.accessToken);
-	const codexAppServer = createCodexAppServer(codexConfig.command, codexConfig.args);
-
-	if (codexAppServer) {
-		registerCodexAppServerHandlers(codexAppServer, client);
-		codexAppServer.start();
-
-		try {
-			await codexAppServer.initialize({
-				clientInfo: {
-					name: "slimebot",
-					title: "Slimebot",
-					version: "0.1.0"
-				}
-			});
-			LogService.info("matrix-runner", "Codex app server initialized");
-		} catch (error) {
-			LogService.warn("matrix-runner", `Failed to initialize Codex app server: ${String(error)}`);
-		}
-	}
-
-	registerMatrixClientHandlers(client, matrixConfig, codexAppServer);
-	registerShutdownHandlers(codexAppServer);
-
-	await client.start();
-
-	LogService.info("matrix-runner", "Bot runner started");
+	const controller = new BotController(matrixConfig, codexConfig);
+	await controller.start();
 }
 
 main().catch((error) => {
