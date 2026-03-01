@@ -7,5 +7,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      HOME: /var/lib/slimebot/codex
     volumes:
       - ./workspace:/var/lib/slimebot/workspace
+      - codex-data:/var/lib/slimebot/codex
+
+volumes:
+  codex-data:
