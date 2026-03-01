@@ -1,11 +1,9 @@
-import { loadCodexAppServerConfig } from "./codex/codexAppServerConfig.js";
-import { BotController } from "./controller/botController.js";
-import { loadMatrixConfig } from "./matrix/matrixConfig.js";
+import { loadAppConfig } from "./appConfig.js";
+import { BotController } from "./botController.js";
 
 async function main(): Promise<void> {
-	const matrixConfig = loadMatrixConfig();
-	const codexConfig = loadCodexAppServerConfig();
-	const controller = new BotController(matrixConfig, codexConfig);
+	const appConfig = loadAppConfig();
+	const controller = new BotController(appConfig);
 	await controller.start();
 }
 
