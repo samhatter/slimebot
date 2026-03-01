@@ -11,7 +11,7 @@ services:
       HOME: /var/lib/slimebot/codex
     volumes:
       - ./workspace:/var/lib/slimebot/workspace
-      - codex-data:/var/lib/slimebot/codex
+      - ./codex:/var/lib/slimebot/codex
 
 volumes:
   codex-data:
