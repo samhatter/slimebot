@@ -22,6 +22,15 @@ type PendingApprovalRequest = {
   itemId: string;
 };
 
+type PendingToolActivity = {
+  threadId: string;
+  turnId?: string;
+  itemId: string;
+  itemType: string;
+  label: string;
+  startedAtMs: number;
+};
+
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
@@ -30,6 +39,7 @@ export class BotController {
   private readonly inFlightTurnByThreadId = new Map<string, string>();
   private readonly pendingCompactionByThreadId = new Set<string>();
   private readonly pendingInterruptByThreadId = new Map<string, string>();
+  private readonly pendingToolActivityByKey = new Map<string, PendingToolActivity>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
   private loginRoomId?: string;
@@ -198,6 +208,102 @@ export class BotController {
       if (!turnId || currentTurnId === turnId) {
         this.inFlightTurnByThreadId.delete(threadId);
       }
+
+      this.clearPendingToolActivity(threadId, turnId);
+    });
+
+    this.codexAppServer.on("notification:item/started", async (params: unknown) => {
+      const record = asRecord(params);
+      const item = asRecord(record?.["item"]);
+      const threadId = this.readStringFromAny(record?.["threadId"]);
+      const turnId = this.readStringFromAny(record?.["turnId"]);
+      const itemId = this.readStringFromAny(item?.["id"]);
+      const itemType = this.readStringFromAny(item?.["type"]);
+
+      if (!threadId || !itemId || !itemType || !item) {
+        return;
+      }
+
+      const toolDisplay = this.describeToolLikeItem(itemType, item);
+      if (!toolDisplay) {
+        return;
+      }
+
+      const key = this.getToolActivityKey(threadId, itemId);
+      if (this.pendingToolActivityByKey.has(key)) {
+        return;
+      }
+
+      this.pendingToolActivityByKey.set(key, {
+        threadId,
+        turnId,
+        itemId,
+        itemType,
+        label: toolDisplay,
+        startedAtMs: Date.now()
+      });
+
+      const roomId = this.getRoomIdByThreadId(threadId);
+      if (!roomId) {
+        return;
+      }
+
+      await this.sendRichTextMessage(
+        roomId,
+        `Tool started: ${toolDisplay}\nthreadId: ${threadId}`,
+        [
+          "<b>Tool started</b>",
+          `<ul>`,
+          `<li><b>tool:</b> ${this.escapeHtml(toolDisplay)}</li>`,
+          `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
+          `</ul>`
+        ].join("")
+      );
+    });
+
+    this.codexAppServer.on("notification:item/completed", async (params: unknown) => {
+      const record = asRecord(params);
+      const item = asRecord(record?.["item"]);
+      const threadId = this.readStringFromAny(record?.["threadId"]);
+      const turnId = this.readStringFromAny(record?.["turnId"]);
+      const itemId = this.readStringFromAny(item?.["id"]);
+
+      if (!threadId || !itemId) {
+        return;
+      }
+
+      const key = this.getToolActivityKey(threadId, itemId);
+      const pendingToolActivity = this.pendingToolActivityByKey.get(key);
+      if (!pendingToolActivity) {
+        return;
+      }
+
+      this.pendingToolActivityByKey.delete(key);
+
+      const roomId = this.getRoomIdByThreadId(threadId);
+      if (!roomId) {
+        return;
+      }
+
+      const elapsedMs = Math.max(0, Date.now() - pendingToolActivity.startedAtMs);
+      const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
+      const itemError = this.readStringFromAny(asRecord(item?.["error"])?.["message"], item?.["error"]);
+      const completionLabel = itemError ? "Tool failed" : "Tool completed";
+
+      await this.sendRichTextMessage(
+        roomId,
+        `${completionLabel}: ${pendingToolActivity.label} (${elapsedSeconds}s)\nthreadId: ${threadId}`,
+        [
+          `<b>${this.escapeHtml(completionLabel)}</b>`,
+          `<ul>`,
+          `<li><b>tool:</b> ${this.escapeHtml(pendingToolActivity.label)}</li>`,
+          `<li><b>duration:</b> ${this.escapeHtml(elapsedSeconds)}s</li>`,
+          `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
+          turnId ? `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>` : "",
+          itemError ? `<li><b>error:</b> ${this.escapeHtml(itemError)}</li>` : "",
+          `</ul>`
+        ].join("")
+      );
     });
 
     this.codexAppServer.on("notification:thread/compacted", async (params: unknown) => {
@@ -948,6 +1054,93 @@ export class BotController {
 
     void this.sendTextMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
     return undefined;
+  }
+
+  private getToolActivityKey(threadId: string, itemId: string): string {
+    return `${threadId}:${itemId}`;
+  }
+
+  private clearPendingToolActivity(threadId: string, turnId?: string): void {
+    for (const [key, pendingToolActivity] of this.pendingToolActivityByKey.entries()) {
+      if (pendingToolActivity.threadId !== threadId) {
+        continue;
+      }
+
+      if (turnId && pendingToolActivity.turnId && pendingToolActivity.turnId !== turnId) {
+        continue;
+      }
+
+      this.pendingToolActivityByKey.delete(key);
+    }
+  }
+
+  private describeToolLikeItem(itemType: string, item: Record<string, unknown>): string | undefined {
+    const normalizedType = itemType.toLowerCase();
+
+    const ignoredTypes = new Set([
+      "usermessage",
+      "agentmessage",
+      "contextcompaction"
+    ]);
+    if (ignoredTypes.has(normalizedType)) {
+      return undefined;
+    }
+
+    const hasToolSignals = [
+      "toolName",
+      "tool_name",
+      "recipient_name",
+      "recipientName",
+      "command",
+      "filePath",
+      "dirPath",
+      "query",
+      "url",
+      "urls",
+      "packageList",
+      "method"
+    ].some((field) => field in item);
+
+    const typeLooksToolLike = [
+      "tool",
+      "command",
+      "exec",
+      "filechange",
+      "applypatch",
+      "search",
+      "read",
+      "write",
+      "terminal",
+      "mcp"
+    ].some((token) => normalizedType.includes(token));
+
+    if (!hasToolSignals && !typeLooksToolLike) {
+      return undefined;
+    }
+
+    const toolName = this.readStringFromAny(item["toolName"], item["tool_name"], item["recipient_name"], item["recipientName"]);
+    if (toolName) {
+      return `${itemType} (${toolName})`;
+    }
+
+    const command = item["command"];
+    if (typeof command === "string" && command.trim()) {
+      return `${itemType}: ${command.trim()}`;
+    }
+
+    if (Array.isArray(command)) {
+      const commandParts = command.filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+      if (commandParts.length > 0) {
+        return `${itemType}: ${commandParts.join(" ")}`;
+      }
+    }
+
+    const method = this.readStringFromAny(item["method"]);
+    if (method) {
+      return `${itemType} (${method})`;
+    }
+
+    return itemType;
   }
 
   private formatThreadList(result: unknown, archived: boolean): { body: string; formattedBody?: string } {
