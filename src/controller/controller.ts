@@ -220,7 +220,6 @@ export class BotController {
       }
 
       this.inFlightTurnByThreadId.set(threadId, turnId);
-      this.updateSelectedModelForThread(threadId, record);
     });
 
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
@@ -232,8 +231,6 @@ export class BotController {
       if (!threadId) {
         return;
       }
-
-      this.updateSelectedModelForThread(threadId, record);
 
       const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
       if (pendingInterruptTurnId && (!turnId || pendingInterruptTurnId === turnId)) {
@@ -1306,25 +1303,6 @@ export class BotController {
       lastOutputTokens: lastOutputTokens ?? existingUsage.lastOutputTokens,
       lastTotalTokens: lastTotalTokens ?? existingUsage.lastTotalTokens
     });
-  }
-
-  /** Updates in-memory selected model state for a thread from payload data. */
-  private updateSelectedModelForThread(threadId: string, payload: unknown): void {
-    const record = asRecord(payload);
-    const turnRecord = asRecord(record?.["turn"]);
-    const threadRecord = asRecord(record?.["thread"]);
-    const model = readStringFromAny(
-      record?.["toModel"],
-      record?.["model"],
-      turnRecord?.["model"],
-      asRecord(turnRecord?.["settings"])?.["model"],
-      threadRecord?.["model"],
-      asRecord(threadRecord?.["settings"])?.["model"]
-    );
-
-    if (model) {
-      this.selectedModelByThreadId.set(threadId, model);
-    }
   }
 
   /** Clears pending tool activity entries for a thread and optional turn. */
