@@ -12,18 +12,18 @@ COPY src ./src
 RUN npm run build
 
 FROM node:22-bookworm-slim AS runner
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex
+
 WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json* ./
 COPY --from=builder /app/dist ./dist
 COPY --from=deps /app/node_modules ./node_modules
-
-RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates \
-	&& rm -rf /var/lib/apt/lists/* \
-	&& mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex
-    
+ 
 VOLUME ["/var/lib/slimebot/workspace", "/var/lib/slimebot/codex"]
 
 CMD ["node", "dist/index.js"]

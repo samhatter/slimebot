@@ -326,19 +326,34 @@ export class BotController {
       ? (record?.["command"] as unknown[]).filter((part): part is string => typeof part === "string").join(" ")
       : "";
 
-    await this.sendTextMessage(
+    const approvalLines = [
+      `<b>Approval requested for ${this.escapeHtml(approvalType)}</b>`,
+      `<ul>`,
+      `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
+      `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>`,
+      `<li><b>itemId:</b> <code>${this.escapeHtml(itemId)}</code></li>`,
+      commandPreview ? `<li><b>command:</b> <code>${this.escapeHtml(commandPreview)}</code></li>` : undefined,
+      reason ? `<li><b>reason:</b> ${this.escapeHtml(reason)}</li>` : undefined,
+      `</ul>`,
+      `<p>Reply with <code>!approve</code> (<code>!a</code>) to approve, or <code>!skip</code> (<code>!s</code>) to decline.</p>`
+    ]
+      .filter((line): line is string => typeof line === "string")
+      .join("");
+
+    await this.sendRichTextMessage(
       roomId,
       [
         `Approval requested for ${approvalType}.`,
-        `- threadId: ${threadId}`,
-        `- turnId: ${turnId}`,
-        `- itemId: ${itemId}`,
-        commandPreview ? `- command: ${commandPreview}` : undefined,
-        reason ? `- reason: ${reason}` : undefined,
+        `threadId: ${threadId}`,
+        `turnId: ${turnId}`,
+        `itemId: ${itemId}`,
+        commandPreview ? `command: ${commandPreview}` : undefined,
+        reason ? `reason: ${reason}` : undefined,
         "Reply with !approve (!a) to approve, or !skip (!s) to decline."
       ]
         .filter((line): line is string => typeof line === "string")
-        .join("\n")
+        .join("\n"),
+      approvalLines
     );
   }
 
@@ -444,26 +459,40 @@ export class BotController {
   }
 
   private async handleHelpCommand(roomId: string): Promise<void> {
-    await this.sendTextMessage(
+    const lines = [
+      "Available commands:",
+      "- !help: Show this command list",
+      "- !new: Create and map a new Codex thread for this room",
+      "- !resume <threadId>: Resume a thread and map it to this room",
+      "- !threads [archived]: List recent threads",
+      "- !rollback [numTurns] [threadId]: Roll back turns (default 1)",
+      "- !compact [threadId]: Trigger thread compaction",
+      "- !archive [threadId]: Archive a thread",
+      "- !unarchive [threadId]: Unarchive a thread",
+      "- !interrupt [threadId]: Interrupt in-flight turn (!i)",
+      "- !approve: Approve pending request in this room (!a)",
+      "- !skip: Decline pending request in this room (!s)",
+      "- !login: Start ChatGPT login flow",
+      "- !callback <full-callback-url>: Complete login callback",
+      "- !models: List available models",
+      "- !account: Show account information"
+    ];
+
+    const formattedBody = [
+      "<b>Available commands</b>",
+      "<ul>",
+      ...lines.slice(1).map((line) => {
+        const [command, ...descriptionParts] = line.slice(2).split(":");
+        const description = descriptionParts.join(":").trim();
+        return `<li><code>${this.escapeHtml(command.trim())}</code>: ${this.escapeHtml(description)}</li>`;
+      }),
+      "</ul>"
+    ].join("");
+
+    await this.sendRichTextMessage(
       roomId,
-      [
-        "Available commands:",
-        "- !help: Show this command list",
-        "- !new: Create and map a new Codex thread for this room",
-        "- !resume <threadId>: Resume a thread and map it to this room",
-        "- !threads [archived]: List recent threads",
-        "- !rollback [numTurns] [threadId]: Roll back turns (default 1)",
-        "- !compact [threadId]: Trigger thread compaction",
-        "- !archive [threadId]: Archive a thread",
-        "- !unarchive [threadId]: Unarchive a thread",
-        "- !interrupt [threadId]: Interrupt in-flight turn (!i)",
-        "- !approve: Approve pending request in this room (!a)",
-        "- !skip: Decline pending request in this room (!s)",
-        "- !login: Start ChatGPT login flow",
-        "- !callback <full-callback-url>: Complete login callback",
-        "- !models: List available models",
-        "- !account: Show account information"
-      ].join("\n")
+      lines.join("\n"),
+      formattedBody
     );
   }
 
@@ -553,7 +582,8 @@ export class BotController {
         sortKey: "updated_at",
         archived
       });
-      await this.sendTextMessage(roomId, this.formatThreadList(result, archived));
+      const formattedThreadList = this.formatThreadList(result, archived);
+      await this.sendRichTextMessage(roomId, formattedThreadList.body, formattedThreadList.formattedBody);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
       this.logWarn(`Failed to list threads: ${String(error)}`);
@@ -895,21 +925,37 @@ export class BotController {
     return undefined;
   }
 
-  private formatThreadList(result: unknown, archived: boolean): string {
+  private formatThreadList(result: unknown, archived: boolean): { body: string; formattedBody?: string } {
     const record = asRecord(result);
     const data = record?.["data"];
     if (!Array.isArray(data) || data.length === 0) {
-      return archived ? "No archived threads found." : "No threads found.";
+      const emptyMessage = archived ? "No archived threads found." : "No threads found.";
+      return {
+        body: emptyMessage,
+        formattedBody: `<p>${this.escapeHtml(emptyMessage)}</p>`
+      };
     }
 
-    const lines = data
+    const entries = data
       .slice(0, 20)
-      .map((item, index) => {
+      .map((item) => {
         const entry = asRecord(item);
         const threadId = this.readStringFromAny(entry?.["id"]) ?? "<unknown>";
         const name = this.readStringFromAny(entry?.["name"]);
         const preview = this.readStringFromAny(entry?.["preview"]);
         const updatedAt = this.readStringFromAny(entry?.["updatedAt"], entry?.["createdAt"]);
+
+        return {
+          threadId,
+          name,
+          preview,
+          updatedAt
+        };
+      });
+
+    const lines = entries
+      .map((entry, index) => {
+        const { threadId, name, preview, updatedAt } = entry;
 
         return [
           `${index + 1}. ${threadId}`,
@@ -922,7 +968,26 @@ export class BotController {
       })
       .join("\n");
 
-    return `${archived ? "Archived" : "Active"} threads:\n${lines}`;
+    const heading = `${archived ? "Archived" : "Active"} threads:`;
+    const formattedBody = [
+      `<b>${this.escapeHtml(archived ? "Archived" : "Active")} threads</b>`,
+      "<ol>",
+      ...entries.map(({ threadId, name, preview, updatedAt }) => {
+        const details = [
+          `<code>${this.escapeHtml(threadId)}</code>`,
+          name ? `<br/><b>name:</b> ${this.escapeHtml(name)}` : "",
+          preview ? `<br/><b>preview:</b> ${this.escapeHtml(preview)}` : "",
+          updatedAt ? `<br/><b>updatedAt:</b> ${this.escapeHtml(updatedAt)}` : ""
+        ].join("");
+        return `<li>${details}</li>`;
+      }),
+      "</ol>"
+    ].join("");
+
+    return {
+      body: `${heading}\n${lines}`,
+      formattedBody
+    };
   }
 
   private readStringFromAny(...values: Array<unknown>): string | undefined {
@@ -997,6 +1062,30 @@ export class BotController {
 
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
     await this.channel.sendTextMessage(roomId, new ChannelOutboundMessage({ body }));
+  }
+
+  private async sendNoticeMessage(roomId: string, body: string): Promise<void> {
+    await this.channel.sendNoticeMessage(roomId, new ChannelOutboundMessage({ body }));
+  }
+
+  private async sendRichTextMessage(roomId: string, body: string, formattedBody?: string): Promise<void> {
+    await this.channel.sendRichTextMessage(
+      roomId,
+      new ChannelOutboundMessage({
+        body,
+        formattedBody: formattedBody?.trim() ? formattedBody : undefined,
+        format: "org.matrix.custom.html"
+      })
+    );
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   private logInfo(message: string): void {

@@ -21,11 +21,17 @@ export class ChannelMessage {
 
 export class ChannelOutboundMessage {
   public readonly body: string;
+  public readonly formattedBody?: string;
+  public readonly format?: string;
 
   public constructor(params: {
     body: string;
+    formattedBody?: string;
+    format?: string;
   }) {
     this.body = params.body;
+    this.formattedBody = params.formattedBody;
+    this.format = params.format;
   }
 }
 
@@ -33,6 +39,14 @@ export abstract class Channel extends EventEmitter {
   public abstract start(): Promise<void>;
 
   public abstract sendTextMessage(roomId: string, message: ChannelOutboundMessage): Promise<void>;
+
+  public async sendNoticeMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
+    await this.sendTextMessage(roomId, message);
+  }
+
+  public async sendRichTextMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
+    await this.sendTextMessage(roomId, message);
+  }
 
   public onMessage(listener: (event: ChannelMessage) => void | Promise<void>): this {
     super.on("message", listener as (...args: unknown[]) => void);

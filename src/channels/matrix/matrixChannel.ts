@@ -18,15 +18,15 @@ export class MatrixChannel extends Channel {
   }
 
   public async sendTextMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
-    const payload: {
-      msgtype: "m.text";
-      body: string;
-    } = {
-      msgtype: "m.text",
-      body: message.body
-    };
+    await this.sendMessage(roomId, "m.text", message);
+  }
 
-    await this.matrixClient.sendMessage(roomId, payload);
+  public async sendNoticeMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
+    await this.sendMessage(roomId, "m.notice", message);
+  }
+
+  public async sendRichTextMessage(roomId: string, message: ChannelOutboundMessage): Promise<void> {
+    await this.sendMessage(roomId, "m.text", message);
   }
 
   private registerEventHandlers(): void {
@@ -80,5 +80,28 @@ export class MatrixChannel extends Channel {
         originServerTs: typeof originServerTs === "number" ? originServerTs : undefined
       }));
     });
+  }
+
+  private async sendMessage(
+    roomId: string,
+    msgtype: "m.text" | "m.notice",
+    message: ChannelOutboundMessage
+  ): Promise<void> {
+    const payload: {
+      msgtype: "m.text" | "m.notice";
+      body: string;
+      format?: "org.matrix.custom.html";
+      formatted_body?: string;
+    } = {
+      msgtype,
+      body: message.body
+    };
+
+    if (typeof message.formattedBody === "string" && message.formattedBody.trim()) {
+      payload.format = message.format === "org.matrix.custom.html" ? message.format : "org.matrix.custom.html";
+      payload.formatted_body = message.formattedBody;
+    }
+
+    await this.matrixClient.sendMessage(roomId, payload);
   }
 }
