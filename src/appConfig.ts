@@ -6,7 +6,7 @@ export type MatrixConfig = {
 };
 
 export type CodexAppServerConfig = {
-  command?: string;
+  command: string;
   args: string[];
 };
 
@@ -25,6 +25,12 @@ function requiredEnv(name: string): string {
 }
 
 export function loadAppConfig(): AppConfig {
+  const codexCommand = process.env.CODEX_APP_SERVER_COMMAND?.trim() || "./node_modules/.bin/codex";
+  const codexArgsFromEnv = process.env.CODEX_APP_SERVER_ARGS?.split(/\s+/u).filter(Boolean);
+  const codexArgs = codexArgsFromEnv && codexArgsFromEnv.length > 0
+    ? codexArgsFromEnv
+    : ["app-server", "--listen", "stdio://"];
+
   return {
     matrix: {
       homeserverUrl: requiredEnv("MATRIX_HOMESERVER_URL"),
@@ -33,8 +39,8 @@ export function loadAppConfig(): AppConfig {
       allowedInviteSender: process.env.MATRIX_ALLOWED_INVITE_SENDER
     },
     codex: {
-      command: process.env.CODEX_APP_SERVER_COMMAND,
-      args: process.env.CODEX_APP_SERVER_ARGS?.split(/\s+/u).filter(Boolean) ?? []
+      command: codexCommand,
+      args: codexArgs
     }
   };
 }

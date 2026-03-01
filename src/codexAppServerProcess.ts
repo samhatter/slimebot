@@ -177,7 +177,7 @@ export class CodexAppServerProcess extends EventEmitter {
         reject
       };
 
-      const timeoutMs = options.timeoutMs ?? 30_000;
+      const timeoutMs = options.timeoutMs ?? 120_000;
       if (timeoutMs > 0) {
         pendingRequest.timeout = setTimeout(() => {
           this.pendingRequests.delete(id);
@@ -251,7 +251,11 @@ export class CodexAppServerProcess extends EventEmitter {
       throw new Error("Codex app server process is not running");
     }
 
-    this.childProcess.stdin.write(`${JSON.stringify(payload)}\n`);
+    const wirePayload = Object.hasOwn(payload, "jsonrpc")
+      ? payload
+      : { jsonrpc: "2.0", ...payload };
+
+    this.childProcess.stdin.write(`${JSON.stringify(wirePayload)}\n`);
   }
 
   public stop(signal: NodeJS.Signals = "SIGTERM"): void {

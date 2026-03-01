@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: slimebot
     restart: unless-stopped
+    tty: true
+    stdin_open: true
     env_file:
       - .env
     environment:

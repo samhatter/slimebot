@@ -14,6 +14,7 @@
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@openai/codex": "^0.106.0",
     "matrix-bot-sdk": "^0.8.0"
   },
   "devDependencies": {
