@@ -38,7 +38,6 @@ type PendingToolActivity = {
   turnId?: string;
   itemId: string;
   itemType: string;
-  label: string;
   startedAtMs: number;
 };
 
@@ -256,7 +255,6 @@ export class BotController {
         turnId,
         itemId,
         itemType,
-        label: toolDisplay,
         startedAtMs: Date.now()
       });
 
@@ -268,20 +266,15 @@ export class BotController {
       await this.sendRichTextMessage(
         roomId,
         [
-          `Tool started: ${toolDisplay}`,
-          `threadId: ${threadId}`,
-          toolSnapshotJson ? `toolCall:\n${toolSnapshotJson}` : undefined
+          `Tool: ${itemType}`,
+          toolSnapshotJson
         ]
           .filter((line): line is string => Boolean(line))
           .join("\n"),
         [
-          "<b>Tool started</b>",
-          `<ul>`,
-          `<li><b>tool:</b> ${this.escapeHtml(toolDisplay)}</li>`,
-          `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
-          `</ul>`,
+          `<p><b>Tool:</b> ${this.escapeHtml(itemType)}</p>`,
           toolSnapshotJson
-            ? `<p><b>tool call</b></p><pre><code>${this.escapeHtml(toolSnapshotJson)}</code></pre>`
+            ? `<pre><code>${this.escapeHtml(toolSnapshotJson)}</code></pre>`
             : ""
         ].join("")
       );
@@ -342,25 +335,17 @@ export class BotController {
       await this.sendRichTextMessage(
         roomId,
         [
-          `${completionLabel}: ${pendingToolActivity.label} (${elapsedSeconds}s)`,
-          `threadId: ${threadId}`,
-          turnId ? `turnId: ${turnId}` : undefined,
+          `${completionLabel}: ${pendingToolActivity.itemType} (${elapsedSeconds}s)`,
           itemError ? `error: ${itemError}` : undefined,
-          completionSnapshotJson ? `toolResult:\n${completionSnapshotJson}` : undefined
+          completionSnapshotJson
         ]
           .filter((line): line is string => Boolean(line))
           .join("\n"),
         [
-          `<b>${this.escapeHtml(completionLabel)}</b>`,
-          `<ul>`,
-          `<li><b>tool:</b> ${this.escapeHtml(pendingToolActivity.label)}</li>`,
-          `<li><b>duration:</b> ${this.escapeHtml(elapsedSeconds)}s</li>`,
-          `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
-          turnId ? `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>` : "",
-          itemError ? `<li><b>error:</b> ${this.escapeHtml(itemError)}</li>` : "",
-          `</ul>`,
+          `<p><b>${this.escapeHtml(completionLabel)}:</b> ${this.escapeHtml(pendingToolActivity.itemType)} (${this.escapeHtml(elapsedSeconds)}s)</p>`,
+          itemError ? `<p><b>error:</b> ${this.escapeHtml(itemError)}</p>` : "",
           completionSnapshotJson
-            ? `<p><b>tool result</b></p><pre><code>${this.escapeHtml(completionSnapshotJson)}</code></pre>`
+            ? `<pre><code>${this.escapeHtml(completionSnapshotJson)}</code></pre>`
             : ""
         ].join("")
       );

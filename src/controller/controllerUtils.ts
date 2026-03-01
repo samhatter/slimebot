@@ -45,38 +45,67 @@ export function getToolActivityKey(threadId: string, itemId: string): string {
   return `${threadId}:${itemId}`;
 }
 
-export function extractToolEventSnapshot(item: Record<string, unknown>): Record<string, unknown> | undefined {
-  const snapshot: Record<string, unknown> = {};
-  const preferredFields = [
+function sanitizeToolPayloadValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const sanitizedArray = value
+      .map((entry) => sanitizeToolPayloadValue(entry))
+      .filter((entry) => entry !== undefined);
+
+    return sanitizedArray.length > 0 ? sanitizedArray : undefined;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return value === null ? undefined : value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const excludedFields = new Set([
     "id",
-    "type",
     "status",
+    "kind",
+    "type",
     "phase",
     "threadId",
     "turnId",
-    "command",
-    "cwd",
-    "durationMs",
-    "exitCode",
-    "server",
-    "tool",
-    "arguments",
-    "result",
-    "review",
-    "query",
-    "url",
-    "path",
-    "changes",
     "commandActions",
-    "aggregatedOutput",
-    "error"
-  ];
+    "actions"
+  ]);
 
-  for (const field of preferredFields) {
-    const value = item[field];
-    if (value !== undefined) {
-      snapshot[field] = value;
+  const sanitizedRecord: Record<string, unknown> = {};
+  for (const [key, entryValue] of Object.entries(record)) {
+    if (excludedFields.has(key)) {
+      continue;
     }
+
+    const sanitizedValue = sanitizeToolPayloadValue(entryValue);
+    if (sanitizedValue !== undefined) {
+      sanitizedRecord[key] = sanitizedValue;
+    }
+  }
+
+  return Object.keys(sanitizedRecord).length > 0 ? sanitizedRecord : undefined;
+}
+
+export function extractToolEventSnapshot(item: Record<string, unknown>): Record<string, unknown> | undefined {
+  const normalizedType = readStringFromAny(item["type"])?.toLowerCase();
+  const sanitizedItem = sanitizeToolPayloadValue(item);
+  if (typeof sanitizedItem !== "object" || sanitizedItem === null) {
+    return undefined;
+  }
+
+  const snapshot = { ...(sanitizedItem as Record<string, unknown>) };
+
+  if (normalizedType === "filechange") {
+    const changes = item["changes"];
+    if (Array.isArray(changes)) {
+      const paths = changes
+        .map((change) => readStringFromAny((change as Record<string, unknown> | undefined)?.["path"]))
+        .filter((path): path is string => Boolean(path));
+      if (paths.length > 0) {
+        snapshot["paths"] = paths;
+      }
+    }
+    delete snapshot["changes"];
   }
 
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
