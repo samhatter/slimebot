@@ -69,6 +69,7 @@ export class BotController {
   private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
   private readonly selectedModelByThreadId = new Map<string, string>();
   private readonly tokenUsageByThreadId = new Map<string, ThreadTokenUsage>();
+  private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
@@ -279,6 +280,11 @@ export class BotController {
       }
 
       this.updateSelectedModelForThread(threadId, record);
+    });
+
+    this.codexAppServer.on("notification:account/rateLimits/updated", (params: unknown) => {
+      const record = asRecord(params);
+      this.latestAccountRateLimits = record?.["rateLimits"] ?? params;
     });
 
     this.codexAppServer.on("notification:item/started", async (params: unknown) => {
@@ -658,7 +664,7 @@ export class BotController {
         await this.handleModelsCommand(roomId);
         return;
       case "account":
-        await this.handleAccountCommand(roomId);
+        await this.handleAccountCommand(roomId, command);
         return;
       case "reasoning":
         await this.handleReasoningCommand(roomId, command);
@@ -686,7 +692,7 @@ export class BotController {
       "- !login: Start ChatGPT login flow",
       "- !callback <full-callback-url>: Complete login callback",
       "- !models: List available models",
-      "- !account: Show account information",
+      "- !account [ratelimits]: Show account information or latest rate limits",
       "- !reasoning [off|low|medium|high] [threadId]: Show or set reasoning per thread (!r)"
     ];
 
@@ -1061,9 +1067,24 @@ export class BotController {
     }
   }
 
-  private async handleAccountCommand(roomId: string): Promise<void> {
+  private async handleAccountCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    const subcommand = command.args[0]?.trim().toLowerCase();
+    if (subcommand === "ratelimits" || subcommand === "rate-limits") {
+      if (!this.latestAccountRateLimits) {
+        await this.sendTextMessage(
+          roomId,
+          "No account rate-limit updates received yet. Send a request first, then try !account ratelimits again."
+        );
+        return;
+      }
+
+      const rateLimitResponse = formatJsonResponse("Account rate limits", this.latestAccountRateLimits);
+      await this.sendRichTextMessage(roomId, rateLimitResponse.body, rateLimitResponse.formattedBody);
       return;
     }
 
