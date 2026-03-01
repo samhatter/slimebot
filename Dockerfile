@@ -19,7 +19,11 @@ COPY package.json package-lock.json* ./
 COPY --from=builder /app/dist ./dist
 COPY --from=deps /app/node_modules ./node_modules
 
-RUN mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex
+    
 VOLUME ["/var/lib/slimebot/workspace", "/var/lib/slimebot/codex"]
 
 CMD ["node", "dist/index.js"]
