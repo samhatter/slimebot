@@ -7,6 +7,7 @@ import { getAuthUrlFromLoginResult, isMatrixReplyMessage } from "./controllerPar
 export class BotController {
   private readonly matrixClient: MatrixClient;
   private readonly codexAppServer?: CodexAppServerProcess;
+  private readonly processStartMs = Date.now();
 
   public constructor(private readonly appConfig: AppConfig) {
     this.matrixClient = new MatrixClient(appConfig.matrix.homeserverUrl, appConfig.matrix.accessToken);
@@ -68,6 +69,11 @@ export class BotController {
 
     this.matrixClient.on("room.message", async (roomId: string, event: unknown): Promise<void> => {
       const rawEvent = event as Record<string, unknown>;
+      const originServerTs = rawEvent["origin_server_ts"];
+      if (typeof originServerTs === "number" && originServerTs < this.processStartMs) {
+        return;
+      }
+
       const sender = rawEvent["sender"] as string | undefined;
       if (!sender || sender === this.appConfig.matrix.botUserId) {
         return;
@@ -97,7 +103,7 @@ export class BotController {
           roomId,
           sender,
           body,
-          originServerTs: rawEvent["origin_server_ts"]
+          originServerTs
         });
       } catch (error) {
         LogService.warn("matrix-runner", `Failed to forward Matrix message to Codex: ${String(error)}`);
