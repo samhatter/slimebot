@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   ChannelOutboundMessage,
   type Channel
@@ -15,11 +17,15 @@ import {
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
+  private readonly routingPersistencePath: string;
+  private readonly roomThreadRoutes = new Map<string, string>();
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
 
   public constructor(appConfig: AppConfig) {
     this.channel = createChannel(appConfig.channel);
+    this.routingPersistencePath = resolve(appConfig.controller.routingPersistencePath);
+    this.loadRoomThreadRoutes();
 
     if (appConfig.codex.command) {
       this.codexAppServer = new CodexAppServerProcess(appConfig.codex.command, appConfig.codex.args);
@@ -37,6 +43,7 @@ export class BotController {
 
     this.codexAppServer?.start();
     await this.initializeCodexAppServer();
+    await this.restoreRoomThreadRoutes();
 
     await this.channel.start();
     this.logInfo("Bot runner started");
@@ -63,16 +70,24 @@ export class BotController {
         return;
       }
 
+      const threadId = this.roomThreadRoutes.get(roomId);
+      if (!threadId) {
+        await this.sendTextMessage(roomId, "No Codex thread is mapped to this room yet. Run !new to create one.");
+        return;
+      }
+
       try {
-        this.codexAppServer.send({
-          type: "matrix.room.message",
-          roomId,
-          sender,
-          body,
-          originServerTs
+        await this.codexAppServer.turnStart({
+          threadId,
+          input: [
+            {
+              type: "text",
+              text: body
+            }
+          ]
         });
       } catch (error) {
-        this.logWarn(`Failed to forward Matrix message to Codex: ${String(error)}`);
+        this.logWarn(`Failed to send message to Codex thread ${threadId}: ${String(error)}`);
       }
     });
   }
@@ -147,15 +162,53 @@ export class BotController {
     const body = record["body"];
 
     if (typeof roomId !== "string" || typeof body !== "string") {
-      return undefined;
+      const method = record["method"];
+      if (method !== "item/completed") {
+        return undefined;
+      }
+
+      const params = asRecord(record["params"]);
+      const threadId = params?.["threadId"];
+      const item = asRecord(params?.["item"]);
+      const itemType = item?.["type"];
+      const itemText = item?.["text"];
+
+      if (typeof threadId !== "string" || itemType !== "agentMessage" || typeof itemText !== "string") {
+        return undefined;
+      }
+
+      const mappedRoomId = this.getRoomIdByThreadId(threadId);
+      if (!mappedRoomId || !itemText.trim()) {
+        return undefined;
+      }
+
+      return {
+        roomId: mappedRoomId,
+        body: itemText
+      };
     }
 
     return { roomId, body };
   }
 
+  private getRoomIdByThreadId(threadId: string): string | undefined {
+    for (const [roomId, mappedThreadId] of this.roomThreadRoutes.entries()) {
+      if (mappedThreadId === threadId) {
+        return roomId;
+      }
+    }
+
+    return undefined;
+  }
+
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (command.name === "help") {
       await this.handleHelpCommand(roomId);
+      return;
+    }
+
+    if (command.name === "new") {
+      await this.handleNewCommand(roomId);
       return;
     }
 
@@ -185,12 +238,48 @@ export class BotController {
       [
         "Available commands:",
         "- !help: Show this command list",
+        "- !new: Create and map a new Codex thread for this room",
         "- !login: Start ChatGPT login flow",
         "- !callback <full-callback-url>: Complete login callback",
         "- !models: List available models",
         "- !account: Show account information"
       ].join("\n")
     );
+  }
+
+  private async handleNewCommand(roomId: string): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    try {
+      const result = await this.codexAppServer.threadStart({});
+      const threadId = asRecord(asRecord(result)?.["thread"])?.["id"];
+      if (!threadId) {
+        await this.sendTextMessage(roomId, `Thread was created but no thread id was returned:\n${this.stringifyJson(result)}`);
+        return;
+      }
+
+      if (typeof threadId !== "string") {
+        await this.sendTextMessage(roomId, `Thread response had invalid thread.id:\n${this.stringifyJson(result)}`);
+        return;
+      }
+
+      const previousThreadId = this.roomThreadRoutes.get(roomId);
+      this.roomThreadRoutes.set(roomId, threadId);
+      this.persistRoomThreadRoutes();
+
+      await this.sendTextMessage(
+        roomId,
+        previousThreadId
+          ? `Mapped room to new thread ${threadId} (replaced ${previousThreadId}).`
+          : `Mapped room to new thread ${threadId}.`
+      );
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to create a new thread: ${String(error)}`);
+      this.logWarn(`Failed to create a new thread for room ${roomId}: ${String(error)}`);
+    }
   }
 
   private async handleModelsCommand(roomId: string): Promise<void> {
@@ -340,6 +429,70 @@ export class BotController {
       this.logInfo("Codex app server initialized");
     } catch (error) {
       this.logWarn(`Failed to initialize Codex app server: ${String(error)}`);
+    }
+  }
+
+  private async restoreRoomThreadRoutes(): Promise<void> {
+    if (!this.codexAppServer || this.roomThreadRoutes.size === 0) {
+      return;
+    }
+
+    for (const [roomId, threadId] of this.roomThreadRoutes.entries()) {
+      try {
+        await this.codexAppServer.threadResume({ threadId });
+      } catch (error) {
+        this.logWarn(
+          `Failed to resume mapped thread for room ${roomId} threadId=${threadId}: ${String(error)}`
+        );
+      }
+    }
+  }
+
+  private loadRoomThreadRoutes(): void {
+    try {
+      const rawState = readFileSync(this.routingPersistencePath, "utf8");
+      if (!rawState.trim()) {
+        return;
+      }
+
+      const parsedState = JSON.parse(rawState) as unknown;
+      const stateRecord = asRecord(parsedState);
+      const routes = asRecord(stateRecord?.["roomThreadRoutes"]);
+      if (!routes) {
+        return;
+      }
+
+      for (const [roomId, threadId] of Object.entries(routes)) {
+        if (typeof threadId === "string" && roomId && threadId) {
+          this.roomThreadRoutes.set(roomId, threadId);
+        }
+      }
+
+      this.logInfo(`Loaded ${String(this.roomThreadRoutes.size)} persisted room-thread route(s)`);
+    } catch (error) {
+      const isMissingFileError =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error as { code?: string }).code === "ENOENT";
+
+      if (isMissingFileError) {
+        return;
+      }
+
+      this.logWarn(`Failed to load room-thread routes from ${this.routingPersistencePath}: ${String(error)}`);
+    }
+  }
+
+  private persistRoomThreadRoutes(): void {
+    try {
+      mkdirSync(dirname(this.routingPersistencePath), { recursive: true });
+      const serializableState = {
+        roomThreadRoutes: Object.fromEntries(this.roomThreadRoutes.entries())
+      };
+      writeFileSync(this.routingPersistencePath, `${JSON.stringify(serializableState, null, 2)}\n`, "utf8");
+    } catch (error) {
+      this.logWarn(`Failed to persist room-thread routes to ${this.routingPersistencePath}: ${String(error)}`);
     }
   }
 

@@ -18,6 +18,7 @@ export function parseControllerCommand(body: string): ControllerCommand | undefi
   const commandName = firstToken.toLowerCase();
   if (
     commandName !== "help" &&
+    commandName !== "new" &&
     commandName !== "login" &&
     commandName !== "callback" &&
     commandName !== "models" &&
