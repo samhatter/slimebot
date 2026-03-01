@@ -16,7 +16,13 @@ export function parseControllerCommand(body: string): ControllerCommand | undefi
 
   const firstToken = tokens[0].startsWith("!") ? tokens[0].slice(1) : tokens[0];
   const commandName = firstToken.toLowerCase();
-  if (commandName !== "login" && commandName !== "callback") {
+  if (
+    commandName !== "help" &&
+    commandName !== "login" &&
+    commandName !== "callback" &&
+    commandName !== "models" &&
+    commandName !== "account"
+  ) {
     return undefined;
   }
 

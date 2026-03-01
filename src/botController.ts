@@ -1,6 +1,12 @@
 import { LogService, MatrixClient } from "matrix-bot-sdk";
 import type { AppConfig } from "./appConfig.js";
 import { CodexAppServerProcess } from "./codexAppServerProcess.js";
+import {
+  buildTableMessage,
+  flattenToRows,
+  formatCompactJson,
+  getModelsTableSpec
+} from "./commandResponseFormatters.js";
 import { type ControllerCommand, parseControllerCommand } from "./controllerCommands.js";
 import { asRecord, getAuthUrlFromLoginResult, isMatrixReplyMessage } from "./controllerParsers.js";
 
@@ -179,6 +185,11 @@ export class BotController {
   }
 
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (command.name === "help") {
+      await this.handleHelpCommand(roomId);
+      return;
+    }
+
     if (command.name === "login") {
       await this.handleLoginCommand(roomId);
       return;
@@ -186,6 +197,72 @@ export class BotController {
 
     if (command.name === "callback") {
       await this.handleCallbackCommand(roomId, command);
+      return;
+    }
+
+    if (command.name === "models") {
+      await this.handleModelsCommand(roomId);
+      return;
+    }
+
+    if (command.name === "account") {
+      await this.handleAccountCommand(roomId);
+    }
+  }
+
+  private async handleHelpCommand(roomId: string): Promise<void> {
+    await this.sendTextMessage(
+      roomId,
+      [
+        "Available commands:",
+        "- !help: Show this command list",
+        "- !login: Start ChatGPT login flow",
+        "- !callback <full-callback-url>: Complete login callback",
+        "- !models: List available models",
+        "- !account: Show account information"
+      ].join("\n")
+    );
+  }
+
+  private async handleModelsCommand(roomId: string): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    try {
+      const result = await this.codexAppServer.modelList({});
+      const modelTable = getModelsTableSpec(result);
+      if (modelTable.rows.length > 0) {
+        await this.sendTableMessage(roomId, "Available models:", modelTable.headers, modelTable.rows);
+        return;
+      }
+
+      const fallbackRows = flattenToRows(result);
+      if (fallbackRows.length > 0) {
+        await this.sendTableMessage(roomId, "Model response:", ["Field", "Value"], fallbackRows);
+        return;
+      }
+
+      await this.sendTextMessage(roomId, `No models were returned. Response: ${formatCompactJson(result)}`);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to list models: ${String(error)}`);
+      LogService.warn("matrix-runner", `Failed to list models: ${String(error)}`);
+    }
+  }
+
+  private async handleAccountCommand(roomId: string): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      return;
+    }
+
+    try {
+      const result = await this.codexAppServer.accountRead({});
+      await this.sendJsonMessage(roomId, result);
+    } catch (error) {
+      await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
+      LogService.warn("matrix-runner", `Failed to read account: ${String(error)}`);
     }
   }
 
@@ -307,6 +384,47 @@ export class BotController {
     } catch (error) {
       LogService.warn("matrix-runner", `Failed to initialize Codex app server: ${String(error)}`);
     }
+  }
+
+  private async sendTableMessage(roomId: string, title: string, headers: string[], rows: string[][]): Promise<void> {
+    const message = buildTableMessage(title, headers, rows);
+
+    await this.matrixClient.sendMessage(roomId, {
+      msgtype: "m.text",
+      body: message.body,
+      format: "org.matrix.custom.html",
+      formatted_body: message.formattedBody
+    });
+  }
+
+  private stringifyJson(value: unknown): string {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private async sendJsonMessage(roomId: string, value: unknown): Promise<void> {
+    const json = this.stringifyJson(value);
+    const body = ["Account JSON:", "```json", json, "```"].join("\n");
+    const formattedBody = `<p>Account JSON:</p><pre><code class="language-json">${this.escapeHtml(json)}</code></pre>`;
+
+    await this.matrixClient.sendMessage(roomId, {
+      msgtype: "m.text",
+      body,
+      format: "org.matrix.custom.html",
+      formatted_body: formattedBody
+    });
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/gu, "&amp;")
+      .replace(/</gu, "&lt;")
+      .replace(/>/gu, "&gt;")
+      .replace(/"/gu, "&quot;")
+      .replace(/'/gu, "&#39;");
   }
 
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
