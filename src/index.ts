@@ -57,6 +57,19 @@ async function main(): Promise<void> {
 	if (codexAppServer) {
 		registerCodexAppServerHandlers(codexAppServer, client);
 		codexAppServer.start();
+
+		try {
+			await codexAppServer.initialize({
+				clientInfo: {
+					name: "slimebot",
+					title: "Slimebot",
+					version: "0.1.0"
+				}
+			});
+			LogService.info("matrix-runner", "Codex app server initialized");
+		} catch (error) {
+			LogService.warn("matrix-runner", `Failed to initialize Codex app server: ${String(error)}`);
+		}
 	}
 
 	registerMatrixClientHandlers(client, matrixConfig, codexAppServer);
