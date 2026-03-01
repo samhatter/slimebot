@@ -4,6 +4,10 @@ Matrix-hosted Codex App Server bot (MVP).
 
 Slimebot bridges a Matrix room to a Codex `app-server` process using JSON-RPC over stdio. Each room is mapped to a Codex thread and persisted locally.
 
+## API Reference
+
+- Codex app-server API overview: https://github.com/openai/codex/tree/main/codex-rs/app-server#api-overview
+
 ## Features
 
 - Matrix room message handling with automatic invite-join support.

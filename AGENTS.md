@@ -12,6 +12,10 @@ This document provides working guidance for coding agents operating in this repo
 - Codex app server process wrapper: `src/codexProcess/`
 - Configuration loading/parsing: `src/config/`
 
+## Codex API Reference
+
+- Codex app-server API overview: https://github.com/openai/codex/tree/main/codex-rs/app-server#api-overview
+
 ## Quick Start
 
 - Install dependencies:
