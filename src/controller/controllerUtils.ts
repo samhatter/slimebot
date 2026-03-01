@@ -1,3 +1,5 @@
+import { asRecord } from "./commands.js";
+
 export function readStringFromAny(...values: Array<unknown>): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value) {
@@ -224,4 +226,49 @@ export function describeToolLikeItem(itemType: string, item: Record<string, unkn
   }
 
   return itemType;
+}
+
+export function extractThreadDefaultEffort(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  return readStringFromAny(
+    record["effort"],
+    record["defaultReasoningEffort"],
+    record["reasoningEffort"],
+    asRecord(record["settings"])?.["effort"],
+    asRecord(record["settings"])?.["reasoningEffort"],
+    asRecord(record["defaultSettings"])?.["effort"],
+    asRecord(record["turnDefaults"])?.["effort"],
+    asRecord(record["config"])?.["effort"]
+  );
+}
+
+export function getRedirectUriFromAuthUrl(authUrl: string): string | undefined {
+  try {
+    const parsedAuthUrl = new URL(authUrl);
+    const redirectUri = parsedAuthUrl.searchParams.get("redirect_uri");
+    return redirectUri ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function normalizeCallbackUrl(input: string, pendingLoginRedirectUri?: string): string | undefined {
+  const cleanedInput = input.replace(/^<|>$/gu, "");
+
+  try {
+    return new URL(cleanedInput).toString();
+  } catch {
+  }
+
+  if (pendingLoginRedirectUri && cleanedInput.startsWith("/")) {
+    try {
+      return new URL(cleanedInput, pendingLoginRedirectUri).toString();
+    } catch {
+    }
+  }
+
+  return undefined;
 }

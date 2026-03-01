@@ -16,12 +16,14 @@ import { formatJsonResponse, formatModelList, formatThreadList } from "./control
 import {
   describeToolLikeItem,
   escapeHtml,
+  extractThreadDefaultEffort,
   extractToolEventSnapshot,
+  getRedirectUriFromAuthUrl,
   getToolActivityKey,
+  normalizeCallbackUrl,
   readStringFromAny,
   stringifyJson,
-  toJsonSnippet,
-  truncateForMessage
+  toJsonSnippet
 } from "./controllerUtils.js";
 import { loadPersistedRoomThreadRoutes, persistRoomThreadRoutes } from "./routingPersistence.js";
 
@@ -178,8 +180,8 @@ export class BotController {
     this.codexAppServer.on("notification:turn/started", (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
-      const threadId = this.readStringFromAny(record?.["threadId"], turn?.["threadId"]);
-      const turnId = this.readStringFromAny(record?.["turnId"], turn?.["id"]);
+      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
 
       if (!threadId || !turnId) {
         return;
@@ -191,8 +193,8 @@ export class BotController {
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
-      const threadId = this.readStringFromAny(record?.["threadId"], turn?.["threadId"]);
-      const turnId = this.readStringFromAny(record?.["turnId"], turn?.["id"]);
+      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
 
       if (!threadId) {
         return;
@@ -228,24 +230,23 @@ export class BotController {
     this.codexAppServer.on("notification:item/started", async (params: unknown) => {
       const record = asRecord(params);
       const item = asRecord(record?.["item"]);
-      const threadId = this.readStringFromAny(record?.["threadId"]);
-      const turnId = this.readStringFromAny(record?.["turnId"]);
-      const itemId = this.readStringFromAny(item?.["id"]);
-      const itemType = this.readStringFromAny(item?.["type"]);
+      const threadId = readStringFromAny(record?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"]);
+      const itemId = readStringFromAny(item?.["id"]);
+      const itemType = readStringFromAny(item?.["type"]);
 
       if (!threadId || !itemId || !itemType || !item) {
         return;
       }
 
-      const toolDisplay = this.describeToolLikeItem(itemType, item);
-      if (!toolDisplay) {
+      if (!describeToolLikeItem(itemType, item)) {
         return;
       }
 
-      const toolSnapshot = this.extractToolEventSnapshot(item);
-      const toolSnapshotJson = toolSnapshot ? this.toJsonSnippet(toolSnapshot, 1800) : undefined;
+      const toolSnapshot = extractToolEventSnapshot(item);
+      const toolSnapshotJson = toolSnapshot ? toJsonSnippet(toolSnapshot, 1800) : undefined;
 
-      const key = this.getToolActivityKey(threadId, itemId);
+      const key = getToolActivityKey(threadId, itemId);
       if (this.pendingToolActivityByKey.has(key)) {
         return;
       }
@@ -272,9 +273,9 @@ export class BotController {
           .filter((line): line is string => Boolean(line))
           .join("\n"),
         [
-          `<p><b>Tool:</b> ${this.escapeHtml(itemType)}</p>`,
+          `<p><b>Tool:</b> ${escapeHtml(itemType)}</p>`,
           toolSnapshotJson
-            ? `<pre><code>${this.escapeHtml(toolSnapshotJson)}</code></pre>`
+            ? `<pre><code>${escapeHtml(toolSnapshotJson)}</code></pre>`
             : ""
         ].join("")
       );
@@ -283,10 +284,10 @@ export class BotController {
     this.codexAppServer.on("notification:item/completed", async (params: unknown) => {
       const record = asRecord(params);
       const item = asRecord(record?.["item"]);
-      const threadId = this.readStringFromAny(record?.["threadId"]);
-      const turnId = this.readStringFromAny(record?.["turnId"]);
-      const itemId = this.readStringFromAny(item?.["id"]);
-      const itemType = this.readStringFromAny(item?.["type"]);
+      const threadId = readStringFromAny(record?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"]);
+      const itemId = readStringFromAny(item?.["id"]);
+      const itemType = readStringFromAny(item?.["type"]);
 
       if (!threadId || !itemId || !itemType) {
         return;
@@ -304,15 +305,15 @@ export class BotController {
             [
               "<b>Compaction completed</b>",
               "<ul>",
-              `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
-              turnId ? `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>` : "",
+              `<li><b>threadId:</b> <code>${escapeHtml(threadId)}</code></li>`,
+              turnId ? `<li><b>turnId:</b> <code>${escapeHtml(turnId)}</code></li>` : "",
               "</ul>"
             ].join("")
           );
         }
       }
 
-      const key = this.getToolActivityKey(threadId, itemId);
+      const key = getToolActivityKey(threadId, itemId);
       const pendingToolActivity = this.pendingToolActivityByKey.get(key);
       if (!pendingToolActivity) {
         return;
@@ -327,10 +328,10 @@ export class BotController {
 
       const elapsedMs = Math.max(0, Date.now() - pendingToolActivity.startedAtMs);
       const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
-      const itemError = this.readStringFromAny(asRecord(item?.["error"])?.["message"], item?.["error"]);
+      const itemError = readStringFromAny(asRecord(item?.["error"])?.["message"], item?.["error"]);
       const completionLabel = itemError ? "Tool failed" : "Tool completed";
-      const completionSnapshot = item ? this.extractToolEventSnapshot(item) : undefined;
-      const completionSnapshotJson = completionSnapshot ? this.toJsonSnippet(completionSnapshot, 1800) : undefined;
+      const completionSnapshot = item ? extractToolEventSnapshot(item) : undefined;
+      const completionSnapshotJson = completionSnapshot ? toJsonSnippet(completionSnapshot, 1800) : undefined;
 
       await this.sendRichTextMessage(
         roomId,
@@ -342,10 +343,10 @@ export class BotController {
           .filter((line): line is string => Boolean(line))
           .join("\n"),
         [
-          `<p><b>${this.escapeHtml(completionLabel)}:</b> ${this.escapeHtml(pendingToolActivity.itemType)} (${this.escapeHtml(elapsedSeconds)}s)</p>`,
-          itemError ? `<p><b>error:</b> ${this.escapeHtml(itemError)}</p>` : "",
+          `<p><b>${escapeHtml(completionLabel)}:</b> ${escapeHtml(pendingToolActivity.itemType)} (${escapeHtml(elapsedSeconds)}s)</p>`,
+          itemError ? `<p><b>error:</b> ${escapeHtml(itemError)}</p>` : "",
           completionSnapshotJson
-            ? `<pre><code>${this.escapeHtml(completionSnapshotJson)}</code></pre>`
+            ? `<pre><code>${escapeHtml(completionSnapshotJson)}</code></pre>`
             : ""
         ].join("")
       );
@@ -353,7 +354,7 @@ export class BotController {
 
     this.codexAppServer.on("notification:serverRequest/resolved", (params: unknown) => {
       const record = asRecord(params);
-      const requestId = this.readStringFromAny(record?.["requestId"]);
+      const requestId = readStringFromAny(record?.["requestId"]);
       if (!requestId) {
         return;
       }
@@ -445,9 +446,9 @@ export class BotController {
     }
 
     const record = asRecord(params);
-    const threadId = this.readStringFromAny(record?.["threadId"]);
-    const turnId = this.readStringFromAny(record?.["turnId"]);
-    const itemId = this.readStringFromAny(record?.["itemId"]);
+    const threadId = readStringFromAny(record?.["threadId"]);
+    const turnId = readStringFromAny(record?.["turnId"]);
+    const itemId = readStringFromAny(record?.["itemId"]);
 
     if (!threadId || !turnId || !itemId) {
       this.codexAppServer.respondSuccess(requestId, { decision: "decline" });
@@ -472,20 +473,20 @@ export class BotController {
     this.pendingApprovalByRoomId.set(roomId, pendingApproval);
     this.pendingApprovalRoomByRequestId.set(String(requestId), roomId);
 
-    const reason = this.readStringFromAny(record?.["reason"]);
+    const reason = readStringFromAny(record?.["reason"]);
     const approvalType = method === "item/fileChange/requestApproval" ? "file change" : "command";
     const commandPreview = Array.isArray(record?.["command"])
       ? (record?.["command"] as unknown[]).filter((part): part is string => typeof part === "string").join(" ")
       : "";
 
     const approvalLines = [
-      `<b>Approval requested for ${this.escapeHtml(approvalType)}</b>`,
+      `<b>Approval requested for ${escapeHtml(approvalType)}</b>`,
       `<ul>`,
-      `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
-      `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>`,
-      `<li><b>itemId:</b> <code>${this.escapeHtml(itemId)}</code></li>`,
-      commandPreview ? `<li><b>command:</b> <code>${this.escapeHtml(commandPreview)}</code></li>` : undefined,
-      reason ? `<li><b>reason:</b> ${this.escapeHtml(reason)}</li>` : undefined,
+      `<li><b>threadId:</b> <code>${escapeHtml(threadId)}</code></li>`,
+      `<li><b>turnId:</b> <code>${escapeHtml(turnId)}</code></li>`,
+      `<li><b>itemId:</b> <code>${escapeHtml(itemId)}</code></li>`,
+      commandPreview ? `<li><b>command:</b> <code>${escapeHtml(commandPreview)}</code></li>` : undefined,
+      reason ? `<li><b>reason:</b> ${escapeHtml(reason)}</li>` : undefined,
       `</ul>`,
       `<p>Reply with <code>!approve</code> (<code>!a</code>) to approve, or <code>!skip</code> (<code>!s</code>) to decline.</p>`
     ]
@@ -640,7 +641,7 @@ export class BotController {
       ...lines.slice(1).map((line) => {
         const [command, ...descriptionParts] = line.slice(2).split(":");
         const description = descriptionParts.join(":").trim();
-        return `<li><code>${this.escapeHtml(command.trim())}</code>: ${this.escapeHtml(description)}</li>`;
+        return `<li><code>${escapeHtml(command.trim())}</code>: ${escapeHtml(description)}</li>`;
       }),
       "</ul>"
     ].join("");
@@ -662,12 +663,12 @@ export class BotController {
       const result = await this.codexAppServer.threadStart({});
       const threadId = asRecord(asRecord(result)?.["thread"])?.["id"];
       if (!threadId) {
-        await this.sendTextMessage(roomId, `Thread was created but no thread id was returned:\n${this.stringifyJson(result)}`);
+        await this.sendTextMessage(roomId, `Thread was created but no thread id was returned:\n${stringifyJson(result)}`);
         return;
       }
 
       if (typeof threadId !== "string") {
-        await this.sendTextMessage(roomId, `Thread response had invalid thread.id:\n${this.stringifyJson(result)}`);
+        await this.sendTextMessage(roomId, `Thread response had invalid thread.id:\n${stringifyJson(result)}`);
         return;
       }
 
@@ -703,7 +704,7 @@ export class BotController {
       const result = await this.codexAppServer.threadResume({ threadId });
       const resumedThreadId = asRecord(asRecord(result)?.["thread"])?.["id"];
       if (typeof resumedThreadId !== "string" || !resumedThreadId) {
-        await this.sendTextMessage(roomId, `Thread resume response missing thread.id:\n${this.stringifyJson(result)}`);
+        await this.sendTextMessage(roomId, `Thread resume response missing thread.id:\n${stringifyJson(result)}`);
         return;
       }
 
@@ -738,29 +739,12 @@ export class BotController {
         sortKey: "updated_at",
         archived
       });
-      const formattedThreadList = this.formatThreadList(result, archived);
+      const formattedThreadList = formatThreadList(result, archived);
       await this.sendRichTextMessage(roomId, formattedThreadList.body, formattedThreadList.formattedBody);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
       this.logWarn(`Failed to list threads: ${String(error)}`);
     }
-  }
-
-  private extractThreadDefaultEffort(record: Record<string, unknown> | undefined): string | undefined {
-    if (!record) {
-      return undefined;
-    }
-
-    return this.readStringFromAny(
-      record["effort"],
-      record["defaultReasoningEffort"],
-      record["reasoningEffort"],
-      asRecord(record["settings"])?.["effort"],
-      asRecord(record["settings"])?.["reasoningEffort"],
-      asRecord(record["defaultSettings"])?.["effort"],
-      asRecord(record["turnDefaults"])?.["effort"],
-      asRecord(record["config"])?.["effort"]
-    );
   }
 
   private async handleRollbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
@@ -781,7 +765,7 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.threadRollback({ threadId, numTurns });
-      await this.sendTextMessage(roomId, `Rollback completed for ${threadId}.\n${this.stringifyJson(result)}`);
+      await this.sendTextMessage(roomId, `Rollback completed for ${threadId}.\n${stringifyJson(result)}`);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to rollback thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to rollback thread ${threadId}: ${String(error)}`);
@@ -849,7 +833,7 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.threadUnarchive({ threadId });
-      await this.sendTextMessage(roomId, `Unarchived thread ${threadId}.\n${this.stringifyJson(result)}`);
+      await this.sendTextMessage(roomId, `Unarchived thread ${threadId}.\n${stringifyJson(result)}`);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to unarchive thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to unarchive thread ${threadId}: ${String(error)}`);
@@ -904,9 +888,10 @@ export class BotController {
     }
 
     const requestId = pendingApproval.requestId;
-    if (pendingApproval.method === "item/commandExecution/requestApproval") {
-      this.codexAppServer.respondSuccess(requestId, { decision });
-    } else if (pendingApproval.method === "item/fileChange/requestApproval") {
+    if (
+      pendingApproval.method === "item/commandExecution/requestApproval"
+      || pendingApproval.method === "item/fileChange/requestApproval"
+    ) {
       this.codexAppServer.respondSuccess(requestId, { decision });
     } else {
       this.codexAppServer.respondError(requestId, {
@@ -936,7 +921,7 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.modelList({});
-      const formattedModelList = this.formatModelList(result);
+      const formattedModelList = formatModelList(result);
       await this.sendRichTextMessage(roomId, formattedModelList.body, formattedModelList.formattedBody);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to list models: ${String(error)}`);
@@ -952,7 +937,7 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.accountRead({});
-      const accountResponse = this.formatJsonResponse("Account response", result);
+      const accountResponse = formatJsonResponse("Account response", result);
       await this.sendRichTextMessage(roomId, accountResponse.body, accountResponse.formattedBody);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
@@ -977,7 +962,7 @@ export class BotController {
         try {
           const threadReadResult = await this.codexAppServer.threadRead({ threadId: mappedThreadId });
           const threadRecord = asRecord(asRecord(threadReadResult)?.["thread"]);
-          const effort = this.extractThreadDefaultEffort(threadRecord);
+          const effort = extractThreadDefaultEffort(threadRecord);
           if (effort) {
             codexEffort = effort;
           }
@@ -1005,7 +990,7 @@ export class BotController {
         try {
           const threadReadResult = await this.codexAppServer.threadRead({ threadId });
           const threadRecord = asRecord(asRecord(threadReadResult)?.["thread"]);
-          codexEffort = this.extractThreadDefaultEffort(threadRecord);
+          codexEffort = extractThreadDefaultEffort(threadRecord);
         } catch (error) {
           this.logWarn(`Failed to read thread ${threadId} for reasoning status: ${String(error)}`);
         }
@@ -1053,7 +1038,7 @@ export class BotController {
       }
 
       this.loginRoomId = roomId;
-      this.pendingLoginRedirectUri = this.getRedirectUriFromAuthUrl(authUrl);
+      this.pendingLoginRedirectUri = getRedirectUriFromAuthUrl(authUrl);
 
       await this.sendTextMessage(
         roomId,
@@ -1077,7 +1062,7 @@ export class BotController {
       return;
     }
 
-    const callbackUrl = this.normalizeCallbackUrl(callbackInput);
+    const callbackUrl = normalizeCallbackUrl(callbackInput, this.pendingLoginRedirectUri);
     if (!callbackUrl) {
       await this.sendTextMessage(roomId, "Could not parse callback URL. Paste the full URL from your browser.");
       return;
@@ -1106,34 +1091,6 @@ export class BotController {
       await this.sendTextMessage(roomId, `Failed to trigger callback URL: ${String(error)}`);
       this.logWarn(`Failed to trigger callback URL: ${String(error)}`);
     }
-  }
-
-  private getRedirectUriFromAuthUrl(authUrl: string): string | undefined {
-    try {
-      const parsedAuthUrl = new URL(authUrl);
-      const redirectUri = parsedAuthUrl.searchParams.get("redirect_uri");
-      return redirectUri ?? undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private normalizeCallbackUrl(input: string): string | undefined {
-    const cleanedInput = input.replace(/^<|>$/gu, "");
-
-    try {
-      return new URL(cleanedInput).toString();
-    } catch {
-    }
-
-    if (this.pendingLoginRedirectUri && cleanedInput.startsWith("/")) {
-      try {
-        return new URL(cleanedInput, this.pendingLoginRedirectUri).toString();
-      } catch {
-      }
-    }
-
-    return undefined;
   }
 
   private async initializeCodexAppServer(): Promise<void> {
@@ -1184,10 +1141,6 @@ export class BotController {
     return undefined;
   }
 
-  private getToolActivityKey(threadId: string, itemId: string): string {
-    return getToolActivityKey(threadId, itemId);
-  }
-
   private clearPendingToolActivity(threadId: string, turnId?: string): void {
     for (const [key, pendingToolActivity] of this.pendingToolActivityByKey.entries()) {
       if (pendingToolActivity.threadId !== threadId) {
@@ -1200,30 +1153,6 @@ export class BotController {
 
       this.pendingToolActivityByKey.delete(key);
     }
-  }
-
-  private describeToolLikeItem(itemType: string, item: Record<string, unknown>): string | undefined {
-    return describeToolLikeItem(itemType, item);
-  }
-
-  private formatThreadList(result: unknown, archived: boolean): { body: string; formattedBody?: string } {
-    return formatThreadList(result, archived);
-  }
-
-  private formatModelList(result: unknown): { body: string; formattedBody?: string } {
-    return formatModelList(result);
-  }
-
-  private formatJsonResponse(title: string, value: unknown): { body: string; formattedBody?: string } {
-    return formatJsonResponse(title, value);
-  }
-
-  private extractToolEventSnapshot(item: Record<string, unknown>): Record<string, unknown> | undefined {
-    return extractToolEventSnapshot(item);
-  }
-
-  private readStringFromAny(...values: Array<unknown>): string | undefined {
-    return readStringFromAny(...values);
   }
 
   private loadRoomThreadRoutes(): void {
@@ -1241,18 +1170,6 @@ export class BotController {
     persistRoomThreadRoutes(this.routingPersistencePath, this.roomThreadRoutes, this.logWarn.bind(this));
   }
 
-  private stringifyJson(value: unknown): string {
-    return stringifyJson(value);
-  }
-
-  private toJsonSnippet(value: unknown, maxLength = 3500): string {
-    return toJsonSnippet(value, maxLength);
-  }
-
-  private truncateForMessage(value: string, maxLength: number): string {
-    return truncateForMessage(value, maxLength);
-  }
-
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
     await this.channel.sendTextMessage(roomId, new ChannelOutboundMessage({ body }));
   }
@@ -1266,10 +1183,6 @@ export class BotController {
         format: "org.matrix.custom.html"
       })
     );
-  }
-
-  private escapeHtml(value: string): string {
-    return escapeHtml(value);
   }
 
   private logInfo(message: string): void {
