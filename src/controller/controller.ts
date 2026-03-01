@@ -212,8 +212,8 @@ export class BotController {
     this.codexAppServer.on("notification:turn/started", (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
-      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
-      const turnId = typeof turn?.["id"] === "string" ? turn["id"] : undefined;
+      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
 
       if (!threadId || !turnId) {
         return;
@@ -226,8 +226,8 @@ export class BotController {
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
-      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
-      const turnId = typeof turn?.["id"] === "string" ? turn["id"] : undefined;
+      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
 
       if (!threadId) {
         return;
@@ -275,7 +275,7 @@ export class BotController {
 
     this.codexAppServer.on("notification:thread/tokenUsage/updated", (params: unknown) => {
       const record = asRecord(params);
-      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
+      const threadId = readStringFromAny(record?.["threadId"]);
       if (!threadId) {
         return;
       }
@@ -291,10 +291,10 @@ export class BotController {
     this.codexAppServer.on("notification:item/started", async (params: unknown) => {
       const record = asRecord(params);
       const item = asRecord(record?.["item"]);
-      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
-      const turnId = typeof record?.["turnId"] === "string" ? record["turnId"] : undefined;
-      const itemId = typeof item?.["id"] === "string" ? item["id"] : undefined;
-      const itemType = typeof item?.["type"] === "string" ? item["type"] : undefined;
+      const threadId = readStringFromAny(record?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"]);
+      const itemId = readStringFromAny(item?.["id"]);
+      const itemType = readStringFromAny(item?.["type"]);
 
       if (!threadId || !itemId || !itemType || !item) {
         return;
@@ -333,10 +333,10 @@ export class BotController {
     this.codexAppServer.on("notification:item/completed", async (params: unknown) => {
       const record = asRecord(params);
       const item = asRecord(record?.["item"]);
-      const threadId = typeof record?.["threadId"] === "string" ? record["threadId"] : undefined;
-      const turnId = typeof record?.["turnId"] === "string" ? record["turnId"] : undefined;
-      const itemId = typeof item?.["id"] === "string" ? item["id"] : undefined;
-      const itemType = typeof item?.["type"] === "string" ? item["type"] : undefined;
+      const threadId = readStringFromAny(record?.["threadId"]);
+      const turnId = readStringFromAny(record?.["turnId"]);
+      const itemId = readStringFromAny(item?.["id"]);
+      const itemType = readStringFromAny(item?.["type"]);
 
       if (!threadId || !itemId || !itemType) {
         return;
@@ -458,8 +458,8 @@ export class BotController {
 
       const result = await this.codexAppServer.turnStart(turnStartParams);
 
-      const turnId = asRecord(asRecord(result)?.["turn"])?.["id"];
-      if (typeof turnId === "string" && turnId) {
+      const turnId = readStringFromAny(asRecord(asRecord(result)?.["turn"])?.["id"]);
+      if (turnId) {
         this.inFlightTurnByThreadId.set(threadId, turnId);
       }
     } catch (error) {
@@ -1312,10 +1312,14 @@ export class BotController {
   private updateSelectedModelForThread(threadId: string, payload: unknown): void {
     const record = asRecord(payload);
     const turnRecord = asRecord(record?.["turn"]);
+    const threadRecord = asRecord(record?.["thread"]);
     const model = readStringFromAny(
       record?.["toModel"],
       record?.["model"],
-      turnRecord?.["model"]
+      turnRecord?.["model"],
+      asRecord(turnRecord?.["settings"])?.["model"],
+      threadRecord?.["model"],
+      asRecord(threadRecord?.["settings"])?.["model"]
     );
 
     if (model) {

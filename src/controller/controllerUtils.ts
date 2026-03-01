@@ -4,7 +4,14 @@
 
 import { asRecord } from "./commands.js";
 
-export { stringifyJson, truncateForMessage, toJsonSnippet } from "../utils/messageFormatting.js";
+/** Safely stringifies arbitrary values as pretty JSON. */
+export function stringifyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
 
 /** Returns the first non-empty string/number value as a string. */
 export function readStringFromAny(...values: Array<unknown>): string | undefined {
