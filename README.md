@@ -46,6 +46,8 @@ Or with Docker Compose:
 
 - `docker compose up --build`
 
+Compose persists runtime logs to `./logs/slimebot.log` (also still visible in `docker compose logs`).
+
 ## Configuration
 
 Primary config file: `slimebot.yaml`

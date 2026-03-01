@@ -6,3 +6,4 @@ codex/
 .env
 slimebot.yaml
 slimebot-routing.json
+logs/

@@ -12,8 +12,12 @@ services:
       SLIMEBOT_CONFIG_PATH: /app/slimebot.yaml
     volumes:
       - ./codex:/var/lib/slimebot/codex
+      - ./logs:/var/lib/slimebot/logs
       - ./slimebot.yaml:/app/slimebot.yaml:ro
       - ./slimebot-routing.json:/app/slimebot-routing.json:rw
+    command: >
+      sh -lc "mkdir -p /var/lib/slimebot/logs &&
+      node dist/index.js 2>&1 | tee -a /var/lib/slimebot/logs/slimebot.log"
 
 volumes:
   codex-data:
