@@ -229,6 +229,9 @@ export class BotController {
         return;
       }
 
+      const toolSnapshot = this.extractToolEventSnapshot(item);
+      const toolSnapshotJson = toolSnapshot ? this.toJsonSnippet(toolSnapshot, 1800) : undefined;
+
       const key = this.getToolActivityKey(threadId, itemId);
       if (this.pendingToolActivityByKey.has(key)) {
         return;
@@ -250,13 +253,22 @@ export class BotController {
 
       await this.sendRichTextMessage(
         roomId,
-        `Tool started: ${toolDisplay}\nthreadId: ${threadId}`,
+        [
+          `Tool started: ${toolDisplay}`,
+          `threadId: ${threadId}`,
+          toolSnapshotJson ? `toolCall:\n${toolSnapshotJson}` : undefined
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join("\n"),
         [
           "<b>Tool started</b>",
           `<ul>`,
           `<li><b>tool:</b> ${this.escapeHtml(toolDisplay)}</li>`,
           `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
-          `</ul>`
+          `</ul>`,
+          toolSnapshotJson
+            ? `<p><b>tool call</b></p><pre><code>${this.escapeHtml(toolSnapshotJson)}</code></pre>`
+            : ""
         ].join("")
       );
     });
@@ -267,9 +279,30 @@ export class BotController {
       const threadId = this.readStringFromAny(record?.["threadId"]);
       const turnId = this.readStringFromAny(record?.["turnId"]);
       const itemId = this.readStringFromAny(item?.["id"]);
+      const itemType = this.readStringFromAny(item?.["type"]);
 
-      if (!threadId || !itemId) {
+      if (!threadId || !itemId || !itemType) {
         return;
+      }
+
+      if (itemType.toLowerCase() === "contextcompaction" && this.pendingCompactionByThreadId.has(threadId)) {
+        this.pendingCompactionByThreadId.delete(threadId);
+        const roomIdForCompaction = this.getRoomIdByThreadId(threadId);
+        if (roomIdForCompaction) {
+          await this.sendRichTextMessage(
+            roomIdForCompaction,
+            turnId
+              ? `Compaction completed for ${threadId} (turn ${turnId}).`
+              : `Compaction completed for ${threadId}.`,
+            [
+              "<b>Compaction completed</b>",
+              "<ul>",
+              `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
+              turnId ? `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>` : "",
+              "</ul>"
+            ].join("")
+          );
+        }
       }
 
       const key = this.getToolActivityKey(threadId, itemId);
@@ -289,10 +322,20 @@ export class BotController {
       const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
       const itemError = this.readStringFromAny(asRecord(item?.["error"])?.["message"], item?.["error"]);
       const completionLabel = itemError ? "Tool failed" : "Tool completed";
+      const completionSnapshot = item ? this.extractToolEventSnapshot(item) : undefined;
+      const completionSnapshotJson = completionSnapshot ? this.toJsonSnippet(completionSnapshot, 1800) : undefined;
 
       await this.sendRichTextMessage(
         roomId,
-        `${completionLabel}: ${pendingToolActivity.label} (${elapsedSeconds}s)\nthreadId: ${threadId}`,
+        [
+          `${completionLabel}: ${pendingToolActivity.label} (${elapsedSeconds}s)`,
+          `threadId: ${threadId}`,
+          turnId ? `turnId: ${turnId}` : undefined,
+          itemError ? `error: ${itemError}` : undefined,
+          completionSnapshotJson ? `toolResult:\n${completionSnapshotJson}` : undefined
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join("\n"),
         [
           `<b>${this.escapeHtml(completionLabel)}</b>`,
           `<ul>`,
@@ -301,30 +344,11 @@ export class BotController {
           `<li><b>threadId:</b> <code>${this.escapeHtml(threadId)}</code></li>`,
           turnId ? `<li><b>turnId:</b> <code>${this.escapeHtml(turnId)}</code></li>` : "",
           itemError ? `<li><b>error:</b> ${this.escapeHtml(itemError)}</li>` : "",
-          `</ul>`
+          `</ul>`,
+          completionSnapshotJson
+            ? `<p><b>tool result</b></p><pre><code>${this.escapeHtml(completionSnapshotJson)}</code></pre>`
+            : ""
         ].join("")
-      );
-    });
-
-    this.codexAppServer.on("notification:thread/compacted", async (params: unknown) => {
-      const record = asRecord(params);
-      const threadId = this.readStringFromAny(record?.["threadId"]);
-      if (!threadId || !this.pendingCompactionByThreadId.has(threadId)) {
-        return;
-      }
-
-      this.pendingCompactionByThreadId.delete(threadId);
-      const roomId = this.getRoomIdByThreadId(threadId);
-      if (!roomId) {
-        return;
-      }
-
-      const turnId = this.readStringFromAny(record?.["turnId"]);
-      await this.sendTextMessage(
-        roomId,
-        turnId
-          ? `Compaction completed for ${threadId} (turn ${turnId}).`
-          : `Compaction completed for ${threadId}.`
       );
     });
 
@@ -885,7 +909,8 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.modelList({});
-      await this.sendTextMessage(roomId, `Model response:\n${this.stringifyJson(result)}`);
+      const formattedModelList = this.formatModelList(result);
+      await this.sendRichTextMessage(roomId, formattedModelList.body, formattedModelList.formattedBody);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to list models: ${String(error)}`);
       this.logWarn(`Failed to list models: ${String(error)}`);
@@ -900,7 +925,8 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.accountRead({});
-      await this.sendTextMessage(roomId, `Account response:\n${this.stringifyJson(result)}`);
+      const accountResponse = this.formatJsonResponse("Account response", result);
+      await this.sendRichTextMessage(roomId, accountResponse.body, accountResponse.formattedBody);
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
       this.logWarn(`Failed to read account: ${String(error)}`);
@@ -1086,6 +1112,52 @@ export class BotController {
       return undefined;
     }
 
+    if (normalizedType === "commandexecution") {
+      const command = item["command"];
+      if (Array.isArray(command)) {
+        const commandParts = command.filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+        if (commandParts.length > 0) {
+          return `${itemType}: ${commandParts.join(" ")}`;
+        }
+      }
+      return itemType;
+    }
+
+    if (normalizedType === "mcptoolcall") {
+      const server = this.readStringFromAny(item["server"]);
+      const tool = this.readStringFromAny(item["tool"]);
+      if (server && tool) {
+        return `${itemType} (${server}/${tool})`;
+      }
+      if (tool) {
+        return `${itemType} (${tool})`;
+      }
+      return itemType;
+    }
+
+    if (normalizedType === "collabtoolcall") {
+      const tool = this.readStringFromAny(item["tool"]);
+      return tool ? `${itemType} (${tool})` : itemType;
+    }
+
+    if (normalizedType === "websearch") {
+      const query = this.readStringFromAny(item["query"]);
+      return query ? `${itemType}: ${query}` : itemType;
+    }
+
+    if (normalizedType === "imageview") {
+      const path = this.readStringFromAny(item["path"]);
+      return path ? `${itemType}: ${path}` : itemType;
+    }
+
+    if (normalizedType === "filechange") {
+      const changes = item["changes"];
+      if (Array.isArray(changes)) {
+        return `${itemType} (${changes.length} change${changes.length === 1 ? "" : "s"})`;
+      }
+      return itemType;
+    }
+
     const hasToolSignals = [
       "toolName",
       "tool_name",
@@ -1162,50 +1234,174 @@ export class BotController {
         const name = this.readStringFromAny(entry?.["name"]);
         const preview = this.readStringFromAny(entry?.["preview"]);
         const updatedAt = this.readStringFromAny(entry?.["updatedAt"], entry?.["createdAt"]);
+        const modelProvider = this.readStringFromAny(entry?.["modelProvider"]);
+        const statusType = this.readStringFromAny(asRecord(entry?.["status"])?.["type"]);
 
         return {
           threadId,
           name,
           preview,
-          updatedAt
+          updatedAt,
+          modelProvider,
+          statusType
         };
       });
 
     const lines = entries
       .map((entry, index) => {
-        const { threadId, name, preview, updatedAt } = entry;
+        const { threadId, name, preview, updatedAt, modelProvider, statusType } = entry;
 
-        return [
-          `${index + 1}. ${threadId}`,
-          name ? `   name: ${name}` : undefined,
-          preview ? `   preview: ${preview}` : undefined,
-          updatedAt ? `   updatedAt: ${updatedAt}` : undefined
-        ]
-          .filter((line): line is string => Boolean(line))
-          .join("\n");
+        return `${index + 1}. ${threadId} | ${name ?? "-"} | ${preview ?? "-"} | ${updatedAt ?? "-"} | ${modelProvider ?? "-"} | ${statusType ?? "-"}`;
       })
       .join("\n");
 
     const heading = `${archived ? "Archived" : "Active"} threads:`;
     const formattedBody = [
       `<b>${this.escapeHtml(archived ? "Archived" : "Active")} threads</b>`,
-      "<ol>",
-      ...entries.map(({ threadId, name, preview, updatedAt }) => {
-        const details = [
-          `<code>${this.escapeHtml(threadId)}</code>`,
-          name ? `<br/><b>name:</b> ${this.escapeHtml(name)}` : "",
-          preview ? `<br/><b>preview:</b> ${this.escapeHtml(preview)}` : "",
-          updatedAt ? `<br/><b>updatedAt:</b> ${this.escapeHtml(updatedAt)}` : ""
-        ].join("");
-        return `<li>${details}</li>`;
-      }),
-      "</ol>"
+      "<table>",
+      "<thead><tr><th>#</th><th>Thread ID</th><th>Name</th><th>Preview</th><th>Updated</th><th>Provider</th><th>Status</th></tr></thead>",
+      "<tbody>",
+      ...entries.map(
+        ({ threadId, name, preview, updatedAt, modelProvider, statusType }, index) =>
+          `<tr><td>${index + 1}</td><td><code>${this.escapeHtml(threadId)}</code></td><td>${this.escapeHtml(name ?? "-")}</td><td>${this.escapeHtml(preview ?? "-")}</td><td>${this.escapeHtml(updatedAt ?? "-")}</td><td>${this.escapeHtml(modelProvider ?? "-")}</td><td>${this.escapeHtml(statusType ?? "-")}</td></tr>`
+      ),
+      "</tbody>",
+      "</table>"
     ].join("");
 
     return {
       body: `${heading}\n${lines}`,
       formattedBody
     };
+  }
+
+  private formatModelList(result: unknown): { body: string; formattedBody?: string } {
+    const record = asRecord(result);
+    const data = record?.["data"];
+    if (!Array.isArray(data)) {
+      return this.formatJsonResponse("Model response", result);
+    }
+
+    const entries = data
+      .slice(0, 40)
+      .map((item) => {
+        const entry = asRecord(item);
+        const modelId = this.readStringFromAny(entry?.["id"], entry?.["model"]);
+
+        if (!modelId) {
+          return undefined;
+        }
+
+        const displayName = this.readStringFromAny(entry?.["displayName"]) ?? "-";
+        const defaultReasoningEffort = this.readStringFromAny(entry?.["defaultReasoningEffort"]) ?? "-";
+        const upgrade = this.readStringFromAny(entry?.["upgrade"]) ?? "-";
+
+        const inputModalitiesRaw = entry?.["inputModalities"];
+        const inputModalities = Array.isArray(inputModalitiesRaw)
+          ? inputModalitiesRaw.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : ["text", "image"];
+
+        const hidden = entry?.["hidden"] === true ? "yes" : "no";
+        const isDefault = entry?.["isDefault"] === true ? "yes" : "no";
+
+        return {
+          modelId,
+          displayName,
+          defaultReasoningEffort,
+          upgrade,
+          inputModalities,
+          hidden,
+          isDefault
+        };
+      })
+      .filter(
+        (
+          entry
+        ): entry is {
+          modelId: string;
+          displayName: string;
+          defaultReasoningEffort: string;
+          upgrade: string;
+          inputModalities: string[];
+          hidden: string;
+          isDefault: string;
+        } => Boolean(entry)
+      );
+
+    if (entries.length === 0) {
+      return this.formatJsonResponse("Model response", result);
+    }
+
+    const lines = [
+      "Available models:",
+      ...entries.map(
+        (entry, index) =>
+          `${index + 1}. ${entry.modelId} | ${entry.displayName} | ${entry.defaultReasoningEffort} | ${entry.inputModalities.join(", ")} | ${entry.isDefault} | ${entry.hidden}${entry.upgrade !== "-" ? ` | ${entry.upgrade}` : ""}`
+      )
+    ];
+
+    const formattedBody = [
+      "<b>Available models</b>",
+      "<table>",
+      "<thead><tr><th>#</th><th>Model</th><th>Name</th><th>Default Effort</th><th>Input Modalities</th><th>Default</th><th>Hidden</th><th>Upgrade</th></tr></thead>",
+      "<tbody>",
+      ...entries.map(
+        (entry, index) =>
+          `<tr><td>${index + 1}</td><td><code>${this.escapeHtml(entry.modelId)}</code></td><td>${this.escapeHtml(entry.displayName)}</td><td>${this.escapeHtml(entry.defaultReasoningEffort)}</td><td>${this.escapeHtml(entry.inputModalities.join(", "))}</td><td>${this.escapeHtml(entry.isDefault)}</td><td>${this.escapeHtml(entry.hidden)}</td><td>${entry.upgrade !== "-" ? `<code>${this.escapeHtml(entry.upgrade)}</code>` : "-"}</td></tr>`
+      ),
+      "</tbody>",
+      "</table>"
+    ].join("");
+
+    return {
+      body: lines.join("\n"),
+      formattedBody
+    };
+  }
+
+  private formatJsonResponse(title: string, value: unknown): { body: string; formattedBody?: string } {
+    const json = this.toJsonSnippet(value, 7000);
+    return {
+      body: `${title}:\n${json}`,
+      formattedBody: `<b>${this.escapeHtml(title)}</b><pre><code>${this.escapeHtml(json)}</code></pre>`
+    };
+  }
+
+  private extractToolEventSnapshot(item: Record<string, unknown>): Record<string, unknown> | undefined {
+    const snapshot: Record<string, unknown> = {};
+    const preferredFields = [
+      "id",
+      "type",
+      "status",
+      "phase",
+      "threadId",
+      "turnId",
+      "command",
+      "cwd",
+      "durationMs",
+      "exitCode",
+      "server",
+      "tool",
+      "arguments",
+      "result",
+      "review",
+      "query",
+      "url",
+      "path",
+      "changes",
+      "commandActions",
+      "aggregatedOutput",
+      "error"
+    ];
+
+    for (const field of preferredFields) {
+      const value = item[field];
+      if (value !== undefined) {
+        snapshot[field] = value;
+      }
+    }
+
+    return Object.keys(snapshot).length > 0 ? snapshot : undefined;
   }
 
   private readStringFromAny(...values: Array<unknown>): string | undefined {
@@ -1276,6 +1472,18 @@ export class BotController {
     } catch {
       return String(value);
     }
+  }
+
+  private toJsonSnippet(value: unknown, maxLength = 3500): string {
+    return this.truncateForMessage(this.stringifyJson(value), maxLength);
+  }
+
+  private truncateForMessage(value: string, maxLength: number): string {
+    if (value.length <= maxLength) {
+      return value;
+    }
+
+    return `${value.slice(0, maxLength)}\n... (truncated)`;
   }
 
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
