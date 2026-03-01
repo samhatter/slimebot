@@ -28,6 +28,7 @@ export class BotController {
   private readonly routingPersistencePath: string;
   private readonly roomThreadRoutes = new Map<string, string>();
   private readonly inFlightTurnByThreadId = new Map<string, string>();
+  private readonly pendingCompactionByThreadId = new Set<string>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
   private loginRoomId?: string;
@@ -181,6 +182,28 @@ export class BotController {
       if (!turnId || currentTurnId === turnId) {
         this.inFlightTurnByThreadId.delete(threadId);
       }
+    });
+
+    this.codexAppServer.on("notification:thread/compacted", async (params: unknown) => {
+      const record = asRecord(params);
+      const threadId = this.readStringFromAny(record?.["threadId"]);
+      if (!threadId || !this.pendingCompactionByThreadId.has(threadId)) {
+        return;
+      }
+
+      this.pendingCompactionByThreadId.delete(threadId);
+      const roomId = this.getRoomIdByThreadId(threadId);
+      if (!roomId) {
+        return;
+      }
+
+      const turnId = this.readStringFromAny(record?.["turnId"]);
+      await this.sendTextMessage(
+        roomId,
+        turnId
+          ? `Compaction completed for ${threadId} (turn ${turnId}).`
+          : `Compaction completed for ${threadId}.`
+      );
     });
 
     this.codexAppServer.on("notification:serverRequest/resolved", (params: unknown) => {
@@ -573,10 +596,18 @@ export class BotController {
       return;
     }
 
+    if (this.pendingCompactionByThreadId.has(threadId)) {
+      await this.sendTextMessage(roomId, `Compaction is already in progress for ${threadId}.`);
+      return;
+    }
+
+    this.pendingCompactionByThreadId.add(threadId);
+
     try {
       await this.codexAppServer.threadCompactStart({ threadId });
       await this.sendTextMessage(roomId, `Started compaction for ${threadId}.`);
     } catch (error) {
+      this.pendingCompactionByThreadId.delete(threadId);
       await this.sendTextMessage(roomId, `Failed to compact thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to compact thread ${threadId}: ${String(error)}`);
     }
