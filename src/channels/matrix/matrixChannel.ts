@@ -5,6 +5,7 @@ import { Channel, ChannelMessage, type ChannelOutboundMessage } from "../channel
 export class MatrixChannel extends Channel {
   private readonly matrixClient: MatrixClient;
   private readonly processStartMs = Date.now();
+  private static readonly maxRateLimitRetries = 8;
 
   public constructor(private readonly config: MatrixConfig) {
     super();
@@ -102,6 +103,80 @@ export class MatrixChannel extends Channel {
       payload.formatted_body = message.formattedBody;
     }
 
-    await this.matrixClient.sendMessage(roomId, payload);
+    await this.sendMessageWithRateLimitRetry(roomId, payload);
+  }
+
+  private async sendMessageWithRateLimitRetry(
+    roomId: string,
+    payload: {
+      msgtype: "m.text" | "m.notice";
+      body: string;
+      format?: "org.matrix.custom.html";
+      formatted_body?: string;
+    }
+  ): Promise<void> {
+    for (let attempt = 0; attempt <= MatrixChannel.maxRateLimitRetries; attempt += 1) {
+      try {
+        await this.matrixClient.sendMessage(roomId, payload);
+        return;
+      } catch (error) {
+        const retryAfterMs = this.getMatrixRetryAfterMs(error);
+        if (retryAfterMs === undefined) {
+          throw error;
+        }
+
+        if (attempt >= MatrixChannel.maxRateLimitRetries) {
+          LogService.warn(
+            "matrix-runner",
+            `Dropping outbound message after ${String(MatrixChannel.maxRateLimitRetries + 1)} rate-limited attempts room=${roomId}`
+          );
+          return;
+        }
+
+        const jitterMs = Math.floor(Math.random() * 250);
+        const waitMs = Math.max(250, retryAfterMs) + jitterMs;
+        LogService.warn(
+          "matrix-runner",
+          `Rate limited when sending to room=${roomId}; retrying in ${String(waitMs)}ms (attempt ${String(attempt + 1)}/${String(MatrixChannel.maxRateLimitRetries + 1)})`
+        );
+        await this.sleep(waitMs);
+      }
+    }
+  }
+
+  private getMatrixRetryAfterMs(error: unknown): number | undefined {
+    if (typeof error !== "object" || error === null) {
+      return undefined;
+    }
+
+    const errorRecord = error as Record<string, unknown>;
+    const errcode = typeof errorRecord["errcode"] === "string"
+      ? errorRecord["errcode"]
+      : typeof (errorRecord["body"] as Record<string, unknown> | undefined)?.["errcode"] === "string"
+        ? ((errorRecord["body"] as Record<string, unknown>)["errcode"] as string)
+        : undefined;
+
+    if (errcode !== "M_LIMIT_EXCEEDED") {
+      return undefined;
+    }
+
+    const retryAfterMsFromTopLevel = errorRecord["retryAfterMs"];
+    if (typeof retryAfterMsFromTopLevel === "number" && Number.isFinite(retryAfterMsFromTopLevel)) {
+      return retryAfterMsFromTopLevel;
+    }
+
+    const body = errorRecord["body"] as Record<string, unknown> | undefined;
+    const retryAfterMsFromBody = body?.["retry_after_ms"];
+    if (typeof retryAfterMsFromBody === "number" && Number.isFinite(retryAfterMsFromBody)) {
+      return retryAfterMsFromBody;
+    }
+
+    return 1000;
+  }
+
+  private async sleep(delayMs: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, delayMs);
+    });
   }
 }
