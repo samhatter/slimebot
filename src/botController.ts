@@ -238,12 +238,24 @@ export class BotController {
     }
 
     try {
-      const response = await fetch(callbackUrl, {
-        method: "GET",
-        redirect: "manual"
-      });
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => {
+        abortController.abort();
+      }, 15_000);
+      try {
+        const response = await fetch(callbackUrl, {
+          method: "GET",
+          redirect: "follow",
+          signal: abortController.signal
+        });
 
-      await this.sendTextMessage(roomId, `Callback triggered inside container (status ${response.status}). Waiting for login completion…`);
+        await this.sendTextMessage(
+          roomId,
+          `Callback accepted inside container (status ${response.status}). Waiting for login completion notification…`
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch (error) {
       await this.sendTextMessage(roomId, `Failed to trigger callback URL: ${String(error)}`);
       LogService.warn("matrix-runner", `Failed to trigger callback URL: ${String(error)}`);
