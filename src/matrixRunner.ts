@@ -4,7 +4,6 @@ type RunnerConfig = {
   homeserverUrl: string;
   accessToken: string;
   botUserId?: string;
-  defaultRoomId?: string;
   allowedInviteSender?: string;
 };
 
