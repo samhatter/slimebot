@@ -1,5 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   ChannelOutboundMessage,
   type Channel
@@ -13,6 +12,18 @@ import {
   type ControllerCommand,
   parseControllerCommand
 } from "./commands.js";
+import { formatJsonResponse, formatModelList, formatThreadList } from "./controllerFormatting.js";
+import {
+  describeToolLikeItem,
+  escapeHtml,
+  extractToolEventSnapshot,
+  getToolActivityKey,
+  readStringFromAny,
+  stringifyJson,
+  toJsonSnippet,
+  truncateForMessage
+} from "./controllerUtils.js";
+import { loadPersistedRoomThreadRoutes, persistRoomThreadRoutes } from "./routingPersistence.js";
 
 type PendingApprovalRequest = {
   requestId: number | string;
@@ -1083,7 +1094,7 @@ export class BotController {
   }
 
   private getToolActivityKey(threadId: string, itemId: string): string {
-    return `${threadId}:${itemId}`;
+    return getToolActivityKey(threadId, itemId);
   }
 
   private clearPendingToolActivity(threadId: string, turnId?: string): void {
@@ -1101,397 +1112,58 @@ export class BotController {
   }
 
   private describeToolLikeItem(itemType: string, item: Record<string, unknown>): string | undefined {
-    const normalizedType = itemType.toLowerCase();
-
-    const ignoredTypes = new Set([
-      "usermessage",
-      "agentmessage",
-      "contextcompaction"
-    ]);
-    if (ignoredTypes.has(normalizedType)) {
-      return undefined;
-    }
-
-    if (normalizedType === "commandexecution") {
-      const command = item["command"];
-      if (Array.isArray(command)) {
-        const commandParts = command.filter((part): part is string => typeof part === "string" && part.trim().length > 0);
-        if (commandParts.length > 0) {
-          return `${itemType}: ${commandParts.join(" ")}`;
-        }
-      }
-      return itemType;
-    }
-
-    if (normalizedType === "mcptoolcall") {
-      const server = this.readStringFromAny(item["server"]);
-      const tool = this.readStringFromAny(item["tool"]);
-      if (server && tool) {
-        return `${itemType} (${server}/${tool})`;
-      }
-      if (tool) {
-        return `${itemType} (${tool})`;
-      }
-      return itemType;
-    }
-
-    if (normalizedType === "collabtoolcall") {
-      const tool = this.readStringFromAny(item["tool"]);
-      return tool ? `${itemType} (${tool})` : itemType;
-    }
-
-    if (normalizedType === "websearch") {
-      const query = this.readStringFromAny(item["query"]);
-      return query ? `${itemType}: ${query}` : itemType;
-    }
-
-    if (normalizedType === "imageview") {
-      const path = this.readStringFromAny(item["path"]);
-      return path ? `${itemType}: ${path}` : itemType;
-    }
-
-    if (normalizedType === "filechange") {
-      const changes = item["changes"];
-      if (Array.isArray(changes)) {
-        return `${itemType} (${changes.length} change${changes.length === 1 ? "" : "s"})`;
-      }
-      return itemType;
-    }
-
-    const hasToolSignals = [
-      "toolName",
-      "tool_name",
-      "recipient_name",
-      "recipientName",
-      "command",
-      "filePath",
-      "dirPath",
-      "query",
-      "url",
-      "urls",
-      "packageList",
-      "method"
-    ].some((field) => field in item);
-
-    const typeLooksToolLike = [
-      "tool",
-      "command",
-      "exec",
-      "filechange",
-      "applypatch",
-      "search",
-      "read",
-      "write",
-      "terminal",
-      "mcp"
-    ].some((token) => normalizedType.includes(token));
-
-    if (!hasToolSignals && !typeLooksToolLike) {
-      return undefined;
-    }
-
-    const toolName = this.readStringFromAny(item["toolName"], item["tool_name"], item["recipient_name"], item["recipientName"]);
-    if (toolName) {
-      return `${itemType} (${toolName})`;
-    }
-
-    const command = item["command"];
-    if (typeof command === "string" && command.trim()) {
-      return `${itemType}: ${command.trim()}`;
-    }
-
-    if (Array.isArray(command)) {
-      const commandParts = command.filter((part): part is string => typeof part === "string" && part.trim().length > 0);
-      if (commandParts.length > 0) {
-        return `${itemType}: ${commandParts.join(" ")}`;
-      }
-    }
-
-    const method = this.readStringFromAny(item["method"]);
-    if (method) {
-      return `${itemType} (${method})`;
-    }
-
-    return itemType;
+    return describeToolLikeItem(itemType, item);
   }
 
   private formatThreadList(result: unknown, archived: boolean): { body: string; formattedBody?: string } {
-    const record = asRecord(result);
-    const data = record?.["data"];
-    if (!Array.isArray(data) || data.length === 0) {
-      const emptyMessage = archived ? "No archived threads found." : "No threads found.";
-      return {
-        body: emptyMessage,
-        formattedBody: `<p>${this.escapeHtml(emptyMessage)}</p>`
-      };
-    }
-
-    const entries = data
-      .slice(0, 20)
-      .map((item) => {
-        const entry = asRecord(item);
-        const threadId = this.readStringFromAny(entry?.["id"]) ?? "<unknown>";
-        const name = this.readStringFromAny(entry?.["name"]);
-        const preview = this.readStringFromAny(entry?.["preview"]);
-        const updatedAt = this.readStringFromAny(entry?.["updatedAt"], entry?.["createdAt"]);
-        const modelProvider = this.readStringFromAny(entry?.["modelProvider"]);
-        const statusType = this.readStringFromAny(asRecord(entry?.["status"])?.["type"]);
-
-        return {
-          threadId,
-          name,
-          preview,
-          updatedAt,
-          modelProvider,
-          statusType
-        };
-      });
-
-    const lines = entries
-      .map((entry, index) => {
-        const { threadId, name, preview, updatedAt, modelProvider, statusType } = entry;
-
-        return `${index + 1}. ${threadId} | ${name ?? "-"} | ${preview ?? "-"} | ${updatedAt ?? "-"} | ${modelProvider ?? "-"} | ${statusType ?? "-"}`;
-      })
-      .join("\n");
-
-    const heading = `${archived ? "Archived" : "Active"} threads:`;
-    const formattedBody = [
-      `<b>${this.escapeHtml(archived ? "Archived" : "Active")} threads</b>`,
-      "<table>",
-      "<thead><tr><th>#</th><th>Thread ID</th><th>Name</th><th>Preview</th><th>Updated</th><th>Provider</th><th>Status</th></tr></thead>",
-      "<tbody>",
-      ...entries.map(
-        ({ threadId, name, preview, updatedAt, modelProvider, statusType }, index) =>
-          `<tr><td>${index + 1}</td><td><code>${this.escapeHtml(threadId)}</code></td><td>${this.escapeHtml(name ?? "-")}</td><td>${this.escapeHtml(preview ?? "-")}</td><td>${this.escapeHtml(updatedAt ?? "-")}</td><td>${this.escapeHtml(modelProvider ?? "-")}</td><td>${this.escapeHtml(statusType ?? "-")}</td></tr>`
-      ),
-      "</tbody>",
-      "</table>"
-    ].join("");
-
-    return {
-      body: `${heading}\n${lines}`,
-      formattedBody
-    };
+    return formatThreadList(result, archived);
   }
 
   private formatModelList(result: unknown): { body: string; formattedBody?: string } {
-    const record = asRecord(result);
-    const data = record?.["data"];
-    if (!Array.isArray(data)) {
-      return this.formatJsonResponse("Model response", result);
-    }
-
-    const entries = data
-      .slice(0, 40)
-      .map((item) => {
-        const entry = asRecord(item);
-        const modelId = this.readStringFromAny(entry?.["id"], entry?.["model"]);
-
-        if (!modelId) {
-          return undefined;
-        }
-
-        const displayName = this.readStringFromAny(entry?.["displayName"]) ?? "-";
-        const defaultReasoningEffort = this.readStringFromAny(entry?.["defaultReasoningEffort"]) ?? "-";
-        const upgrade = this.readStringFromAny(entry?.["upgrade"]) ?? "-";
-
-        const inputModalitiesRaw = entry?.["inputModalities"];
-        const inputModalities = Array.isArray(inputModalitiesRaw)
-          ? inputModalitiesRaw.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : ["text", "image"];
-
-        const hidden = entry?.["hidden"] === true ? "yes" : "no";
-        const isDefault = entry?.["isDefault"] === true ? "yes" : "no";
-
-        return {
-          modelId,
-          displayName,
-          defaultReasoningEffort,
-          upgrade,
-          inputModalities,
-          hidden,
-          isDefault
-        };
-      })
-      .filter(
-        (
-          entry
-        ): entry is {
-          modelId: string;
-          displayName: string;
-          defaultReasoningEffort: string;
-          upgrade: string;
-          inputModalities: string[];
-          hidden: string;
-          isDefault: string;
-        } => Boolean(entry)
-      );
-
-    if (entries.length === 0) {
-      return this.formatJsonResponse("Model response", result);
-    }
-
-    const lines = [
-      "Available models:",
-      ...entries.map(
-        (entry, index) =>
-          `${index + 1}. ${entry.modelId} | ${entry.displayName} | ${entry.defaultReasoningEffort} | ${entry.inputModalities.join(", ")} | ${entry.isDefault} | ${entry.hidden}${entry.upgrade !== "-" ? ` | ${entry.upgrade}` : ""}`
-      )
-    ];
-
-    const formattedBody = [
-      "<b>Available models</b>",
-      "<table>",
-      "<thead><tr><th>#</th><th>Model</th><th>Name</th><th>Default Effort</th><th>Input Modalities</th><th>Default</th><th>Hidden</th><th>Upgrade</th></tr></thead>",
-      "<tbody>",
-      ...entries.map(
-        (entry, index) =>
-          `<tr><td>${index + 1}</td><td><code>${this.escapeHtml(entry.modelId)}</code></td><td>${this.escapeHtml(entry.displayName)}</td><td>${this.escapeHtml(entry.defaultReasoningEffort)}</td><td>${this.escapeHtml(entry.inputModalities.join(", "))}</td><td>${this.escapeHtml(entry.isDefault)}</td><td>${this.escapeHtml(entry.hidden)}</td><td>${entry.upgrade !== "-" ? `<code>${this.escapeHtml(entry.upgrade)}</code>` : "-"}</td></tr>`
-      ),
-      "</tbody>",
-      "</table>"
-    ].join("");
-
-    return {
-      body: lines.join("\n"),
-      formattedBody
-    };
+    return formatModelList(result);
   }
 
   private formatJsonResponse(title: string, value: unknown): { body: string; formattedBody?: string } {
-    const json = this.toJsonSnippet(value, 7000);
-    return {
-      body: `${title}:\n${json}`,
-      formattedBody: `<b>${this.escapeHtml(title)}</b><pre><code>${this.escapeHtml(json)}</code></pre>`
-    };
+    return formatJsonResponse(title, value);
   }
 
   private extractToolEventSnapshot(item: Record<string, unknown>): Record<string, unknown> | undefined {
-    const snapshot: Record<string, unknown> = {};
-    const preferredFields = [
-      "id",
-      "type",
-      "status",
-      "phase",
-      "threadId",
-      "turnId",
-      "command",
-      "cwd",
-      "durationMs",
-      "exitCode",
-      "server",
-      "tool",
-      "arguments",
-      "result",
-      "review",
-      "query",
-      "url",
-      "path",
-      "changes",
-      "commandActions",
-      "aggregatedOutput",
-      "error"
-    ];
-
-    for (const field of preferredFields) {
-      const value = item[field];
-      if (value !== undefined) {
-        snapshot[field] = value;
-      }
-    }
-
-    return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+    return extractToolEventSnapshot(item);
   }
 
   private readStringFromAny(...values: Array<unknown>): string | undefined {
-    for (const value of values) {
-      if (typeof value === "string" && value) {
-        return value;
-      }
-
-      if (typeof value === "number") {
-        return String(value);
-      }
-    }
-
-    return undefined;
+    return readStringFromAny(...values);
   }
 
   private loadRoomThreadRoutes(): void {
-    try {
-      const rawState = readFileSync(this.routingPersistencePath, "utf8");
-      if (!rawState.trim()) {
-        return;
-      }
-
-      const parsedState = JSON.parse(rawState) as unknown;
-      const stateRecord = asRecord(parsedState);
-      const routes = asRecord(stateRecord?.["roomThreadRoutes"]);
-      if (!routes) {
-        return;
-      }
-
-      for (const [roomId, threadId] of Object.entries(routes)) {
-        if (typeof threadId === "string" && roomId && threadId) {
-          this.roomThreadRoutes.set(roomId, threadId);
-        }
-      }
-
-      this.logInfo(`Loaded ${String(this.roomThreadRoutes.size)} persisted room-thread route(s)`);
-    } catch (error) {
-      const isMissingFileError =
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        (error as { code?: string }).code === "ENOENT";
-
-      if (isMissingFileError) {
-        return;
-      }
-
-      this.logWarn(`Failed to load room-thread routes from ${this.routingPersistencePath}: ${String(error)}`);
+    const persistedRoutes = loadPersistedRoomThreadRoutes(
+      this.routingPersistencePath,
+      this.logInfo.bind(this),
+      this.logWarn.bind(this)
+    );
+    for (const [roomId, threadId] of persistedRoutes.entries()) {
+      this.roomThreadRoutes.set(roomId, threadId);
     }
   }
 
   private persistRoomThreadRoutes(): void {
-    try {
-      mkdirSync(dirname(this.routingPersistencePath), { recursive: true });
-      const serializableState = {
-        roomThreadRoutes: Object.fromEntries(this.roomThreadRoutes.entries())
-      };
-      writeFileSync(this.routingPersistencePath, `${JSON.stringify(serializableState, null, 2)}\n`, "utf8");
-    } catch (error) {
-      this.logWarn(`Failed to persist room-thread routes to ${this.routingPersistencePath}: ${String(error)}`);
-    }
+    persistRoomThreadRoutes(this.routingPersistencePath, this.roomThreadRoutes, this.logWarn.bind(this));
   }
 
   private stringifyJson(value: unknown): string {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
+    return stringifyJson(value);
   }
 
   private toJsonSnippet(value: unknown, maxLength = 3500): string {
-    return this.truncateForMessage(this.stringifyJson(value), maxLength);
+    return toJsonSnippet(value, maxLength);
   }
 
   private truncateForMessage(value: string, maxLength: number): string {
-    if (value.length <= maxLength) {
-      return value;
-    }
-
-    return `${value.slice(0, maxLength)}\n... (truncated)`;
+    return truncateForMessage(value, maxLength);
   }
 
   private async sendTextMessage(roomId: string, body: string): Promise<void> {
     await this.channel.sendTextMessage(roomId, new ChannelOutboundMessage({ body }));
-  }
-
-  private async sendNoticeMessage(roomId: string, body: string): Promise<void> {
-    await this.channel.sendNoticeMessage(roomId, new ChannelOutboundMessage({ body }));
   }
 
   private async sendRichTextMessage(roomId: string, body: string, formattedBody?: string): Promise<void> {
@@ -1506,12 +1178,7 @@ export class BotController {
   }
 
   private escapeHtml(value: string): string {
-    return value
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
+    return escapeHtml(value);
   }
 
   private logInfo(message: string): void {
