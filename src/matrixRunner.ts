@@ -21,7 +21,6 @@ function loadConfig(): RunnerConfig {
     homeserverUrl: requiredEnv("MATRIX_HOMESERVER_URL"),
     accessToken: requiredEnv("MATRIX_ACCESS_TOKEN"),
     botUserId: process.env.MATRIX_BOT_USER_ID,
-    defaultRoomId: process.env.MATRIX_DEFAULT_ROOM_ID,
     allowedInviteSender: process.env.MATRIX_ALLOWED_INVITE_SENDER
   };
 }
@@ -69,14 +68,6 @@ export async function startMatrixBotRunner(): Promise<void> {
   });
 
   await client.start();
-
-  if (config.defaultRoomId) {
-    try {
-      await client.joinRoom(config.defaultRoomId);
-    } catch (error) {
-      LogService.warn("matrix-runner", `Failed to join room ${config.defaultRoomId}: ${String(error)}`);
-    }
-  }
 
   LogService.info("matrix-runner", "Bot runner started");
 }
