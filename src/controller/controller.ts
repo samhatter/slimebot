@@ -29,6 +29,7 @@ export class BotController {
   private readonly roomThreadRoutes = new Map<string, string>();
   private readonly inFlightTurnByThreadId = new Map<string, string>();
   private readonly pendingCompactionByThreadId = new Set<string>();
+  private readonly pendingInterruptByThreadId = new Map<string, string>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
   private loginRoomId?: string;
@@ -164,7 +165,7 @@ export class BotController {
       this.inFlightTurnByThreadId.set(threadId, turnId);
     });
 
-    this.codexAppServer.on("notification:turn/completed", (params: unknown) => {
+    this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
       const record = asRecord(params);
       const turn = asRecord(record?.["turn"]);
       const threadId = this.readStringFromAny(record?.["threadId"], turn?.["threadId"]);
@@ -172,6 +173,21 @@ export class BotController {
 
       if (!threadId) {
         return;
+      }
+
+      const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
+      if (pendingInterruptTurnId && (!turnId || pendingInterruptTurnId === turnId)) {
+        this.pendingInterruptByThreadId.delete(threadId);
+
+        const roomId = this.getRoomIdByThreadId(threadId);
+        if (roomId) {
+          await this.sendTextMessage(
+            roomId,
+            turnId
+              ? `Interrupt completed for turn ${turnId} on thread ${threadId}.`
+              : `Interrupt completed for thread ${threadId}.`
+          );
+        }
       }
 
       const currentTurnId = this.inFlightTurnByThreadId.get(threadId);
@@ -700,10 +716,19 @@ export class BotController {
       return;
     }
 
+    const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
+    if (pendingInterruptTurnId && pendingInterruptTurnId === turnId) {
+      await this.sendTextMessage(roomId, `Interrupt is already in progress for turn ${turnId}.`);
+      return;
+    }
+
+    this.pendingInterruptByThreadId.set(threadId, turnId);
+
     try {
       await this.codexAppServer.turnInterrupt({ threadId, turnId });
-      await this.sendTextMessage(roomId, `Interrupt requested for turn ${turnId}.`);
+      await this.sendTextMessage(roomId, `Interrupt requested for turn ${turnId}. You'll be notified when it completes.`);
     } catch (error) {
+      this.pendingInterruptByThreadId.delete(threadId);
       await this.sendTextMessage(roomId, `Failed to interrupt turn ${turnId}: ${String(error)}`);
       this.logWarn(`Failed to interrupt turn ${turnId} on thread ${threadId}: ${String(error)}`);
     }
