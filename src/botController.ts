@@ -1,10 +1,8 @@
 import { LogService, MatrixClient } from "matrix-bot-sdk";
 import type { AppConfig } from "./appConfig.js";
 import { CodexAppServerProcess } from "./codexAppServerProcess.js";
-import { type ControllerCommand } from "./controllerCommands.js";
-import { getAuthUrlFromLoginResult } from "./controllerParsers.js";
-import { registerCodexEventHandlers } from "./codexEventHandlers.js";
-import { registerMatrixEventHandlers } from "./matrixEventHandlers.js";
+import { type ControllerCommand, parseControllerCommand } from "./controllerCommands.js";
+import { getAuthUrlFromLoginResult, isMatrixReplyMessage } from "./controllerParsers.js";
 
 export class BotController {
   private readonly matrixClient: MatrixClient;
@@ -19,18 +17,10 @@ export class BotController {
   }
 
   public async start(): Promise<void> {
-    registerMatrixEventHandlers({
-      matrixClient: this.matrixClient,
-      matrixConfig: this.appConfig.matrix,
-      codexAppServer: this.codexAppServer,
-      handleCommand: this.handleCommand.bind(this)
-    });
+    this.registerMatrixEventHandlers();
 
     if (this.codexAppServer) {
-      registerCodexEventHandlers({
-        codexAppServer: this.codexAppServer,
-        sendTextMessage: this.sendTextMessage.bind(this)
-      });
+      this.registerCodexEventHandlers();
     }
 
     this.registerShutdownHandlers();
@@ -49,6 +39,114 @@ export class BotController {
 
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+  }
+
+  private registerMatrixEventHandlers(): void {
+    this.matrixClient.on("room.invite", async (roomId: string, event: unknown): Promise<void> => {
+      const rawEvent = event as Record<string, unknown>;
+      const sender = rawEvent["sender"] as string | undefined;
+      if (!sender) {
+        LogService.info("matrix-runner", `[room.invite] ignored room=${roomId} sender=unknown`);
+        return;
+      }
+
+      if (this.appConfig.matrix.allowedInviteSender && sender !== this.appConfig.matrix.allowedInviteSender) {
+        LogService.info(
+          "matrix-runner",
+          `[room.invite] ignored room=${roomId} sender=${sender} reason=sender_not_allowed allowed=${this.appConfig.matrix.allowedInviteSender}`
+        );
+        return;
+      }
+
+      try {
+        await this.matrixClient.joinRoom(roomId);
+        LogService.info("matrix-runner", `[room.invite] joined room=${roomId} sender=${sender}`);
+      } catch (error) {
+        LogService.warn("matrix-runner", `Failed to join invited room ${roomId}: ${String(error)}`);
+      }
+    });
+
+    this.matrixClient.on("room.message", async (roomId: string, event: unknown): Promise<void> => {
+      const rawEvent = event as Record<string, unknown>;
+      const sender = rawEvent["sender"] as string | undefined;
+      if (!sender || sender === this.appConfig.matrix.botUserId) {
+        return;
+      }
+
+      const content = rawEvent["content"] as { body?: string; msgtype?: string } | undefined;
+      if (!content || content.msgtype !== "m.text") {
+        return;
+      }
+
+      const body = content.body ?? "";
+      LogService.info("matrix-runner", `[room.message] room=${roomId} sender=${sender} body=${body}`);
+
+      const command = parseControllerCommand(body);
+      if (command) {
+        await this.handleCommand(roomId, command);
+        return;
+      }
+
+      if (!this.codexAppServer || !body) {
+        return;
+      }
+
+      try {
+        this.codexAppServer.send({
+          type: "matrix.room.message",
+          roomId,
+          sender,
+          body,
+          originServerTs: rawEvent["origin_server_ts"]
+        });
+      } catch (error) {
+        LogService.warn("matrix-runner", `Failed to forward Matrix message to Codex: ${String(error)}`);
+      }
+    });
+  }
+
+  private registerCodexEventHandlers(): void {
+    if (!this.codexAppServer) {
+      return;
+    }
+
+    this.codexAppServer.on("start", (pid: number) => {
+      LogService.info("matrix-runner", `Codex app server started pid=${pid}`);
+    });
+
+    this.codexAppServer.on("stdout", (line: string) => {
+      LogService.info("matrix-runner", `[codex.stdout] ${line}`);
+    });
+
+    this.codexAppServer.on("stderr", (line: string) => {
+      LogService.warn("matrix-runner", `[codex.stderr] ${line}`);
+    });
+
+    this.codexAppServer.on("error", (error: Error) => {
+      LogService.error("matrix-runner", `Codex app server error: ${String(error)}`);
+    });
+
+    this.codexAppServer.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      LogService.warn(
+        "matrix-runner",
+        `Codex app server exited code=${String(code)} signal=${String(signal)}`
+      );
+    });
+
+    this.codexAppServer.on("message", async (message: unknown) => {
+      if (!isMatrixReplyMessage(message)) {
+        return;
+      }
+
+      try {
+        await this.sendTextMessage(message.roomId, message.body);
+      } catch (error) {
+        LogService.warn(
+          "matrix-runner",
+          `Failed to send Codex reply to room ${message.roomId}: ${String(error)}`
+        );
+      }
+    });
   }
 
   private async handleCommand(roomId: string, command: ControllerCommand): Promise<void> {
