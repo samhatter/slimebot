@@ -1,22 +1,9 @@
 /**
- * @fileoverview Channel-level command parsing for controller-dispatchable commands.
+ * @fileoverview Transport-agnostic command catalog for controller-dispatchable commands.
  */
 
-/** Parsed controller command with canonical name and args. */
-export type ControllerCommand = {
-  name: string;
-  args: string[];
-};
-
-const commandAliases: Record<string, string> = {
-  i: "interrupt",
-  a: "approve",
-  s: "skip",
-  r: "reasoning",
-  m: "model",
-};
-
-const supportedCommands = new Set<string>([
+/** Canonical command names supported by the controller. */
+export const controllerCommandNames = [
   "help",
   "new",
   "resume",
@@ -34,28 +21,20 @@ const supportedCommands = new Set<string>([
   "model",
   "account",
   "reasoning"
-]);
+] as const;
 
-/** Parses a raw room message into a supported controller command, if any. */
-export function parseControllerCommand(body: string): ControllerCommand | undefined {
-  const trimmed = body.trim();
-  if (!trimmed) {
-    return undefined;
-  }
+/** Canonical controller command name. */
+export type ControllerCommandName = (typeof controllerCommandNames)[number];
 
-  const tokens = trimmed.split(/\s+/u).filter(Boolean);
-  if (tokens.length === 0) {
-    return undefined;
-  }
+/** Parsed controller command with canonical name and args. */
+export type ControllerCommand = {
+  name: ControllerCommandName;
+  args: string[];
+};
 
-  const firstToken = tokens[0].startsWith("!") ? tokens[0].slice(1) : tokens[0];
-  const commandName = commandAliases[firstToken.toLowerCase()] ?? firstToken.toLowerCase();
-  if (!supportedCommands.has(commandName)) {
-    return undefined;
-  }
+const supportedCommandSet = new Set<string>(controllerCommandNames);
 
-  return {
-    name: commandName,
-    args: tokens.slice(1)
-  };
+/** Type guard for canonical command names. */
+export function isControllerCommandName(value: string): value is ControllerCommandName {
+  return supportedCommandSet.has(value);
 }
