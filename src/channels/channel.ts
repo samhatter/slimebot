@@ -3,6 +3,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import type { ControllerCommand } from "./commands.js";
 
 /** Shape for thread status messages rendered by channel implementations. */
 export type ChannelThreadStatusView = {
@@ -56,17 +57,20 @@ export class ChannelMessage {
   public readonly sender: string;
   public readonly body: string;
   public readonly originServerTs?: number;
+  public readonly command?: ControllerCommand;
 
   public constructor(params: {
     roomId: string;
     sender: string;
     body: string;
     originServerTs?: number;
+    command?: ControllerCommand;
   }) {
     this.roomId = params.roomId;
     this.sender = params.sender;
     this.body = params.body;
     this.originServerTs = params.originServerTs;
+    this.command = params.command;
   }
 }
 

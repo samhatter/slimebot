@@ -24,6 +24,7 @@ import {
   formatToolActivityCompleted,
   formatToolActivityStarted
 } from "./matrixFormatting.js";
+import { parseControllerCommand } from "../commands.js";
 
 /**
  * Matrix-backed channel that maps high-level controller responses to Matrix messages.
@@ -161,12 +162,14 @@ export class MatrixChannel extends Channel {
       }
 
       const body = content.body ?? "";
+      const command = parseControllerCommand(body);
       LogService.info("matrix-runner", `[room.message] room=${roomId} sender=${sender} body=${body}`);
       this.emitMessage(new ChannelMessage({
         roomId,
         sender,
         body,
-        originServerTs: typeof originServerTs === "number" ? originServerTs : undefined
+        originServerTs: typeof originServerTs === "number" ? originServerTs : undefined,
+        command
       }));
     });
   }

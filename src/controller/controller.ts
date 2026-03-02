@@ -12,10 +12,9 @@ import type { AppConfig } from "../config/config.js";
 import { CodexAppServerProcess } from "../codexProcess/codexAppServerProcess.js";
 import {
   asRecord,
-  getAuthUrlFromLoginResult,
-  type ControllerCommand,
-  parseControllerCommand
+  getAuthUrlFromLoginResult
 } from "./commands.js";
+import type { ControllerCommand } from "../channels/commands.js";
 import {
   describeToolLikeItem,
   extractThreadDefaultEffort,
@@ -120,8 +119,7 @@ export class BotController {
 
   /** Registers inbound channel message handling and command routing. */
   private registerChannelEventHandlers(): void {
-    this.channel.onMessage(async ({ roomId, sender, body, originServerTs }) => {
-      const command = parseControllerCommand(body);
+    this.channel.onMessage(async ({ roomId, sender, body, originServerTs, command }) => {
       if (command) {
         await this.handleCommand(roomId, command);
         return;
@@ -133,7 +131,7 @@ export class BotController {
 
       const threadId = this.roomThreadRoutes.get(roomId);
       if (!threadId) {
-        await this.channel.sendTextMessage(roomId, "No Codex thread is mapped to this room yet. Run !new to create one.");
+        await this.channel.sendSystemMessage(roomId, "No Codex thread is mapped to this room yet. Run !new to create one.");
         return;
       }
 
