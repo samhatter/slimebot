@@ -280,21 +280,17 @@ export function shouldIgnoreCodexLogLine(line: string): boolean {
       const ignoredMethods = new Set([
         "codex/event/agent_message_content_delta",
         "codex/event/agent_message_delta",
-        "item/agentmessage/delta"
+        "item/agentmessage/delta",
+        "item/reasoning/summarytextdelta",
+        "codex/event/agent_reasoning_delta",
+        "codex/event/reasoning_content_delta"
       ]);
       if (ignoredMethods.has(normalizedMethod)) {
         return true;
       }
     }
-
-    const params = asRecord(record["params"]);
-    const messageType = readStringFromAny(asRecord(params?.["msg"])?.["type"])?.toLowerCase();
-    if (messageType === "agent_message_content_delta" || messageType === "agent_message_delta") {
-      return true;
-    }
-
-    const level = readStringFromAny(record["level"], record["severity"])?.toLowerCase();
-    return level === "delta";
+    
+    return false;
   } catch {
     return false;
   }
