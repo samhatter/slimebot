@@ -9,6 +9,8 @@ This document provides working guidance for coding agents operating in this repo
 - Entrypoint: `src/index.ts`
 - Main orchestration class: `src/controller/controller.ts`
 - Channel abstraction: `src/channels/`
+- Matrix command parsing/aliases: `src/channels/matrix/matrixCommands.ts`
+- Matrix message formatting: `src/channels/matrix/matrixFormatting.ts`
 - Codex app server process wrapper: `src/codexProcess/`
 - Configuration loading/parsing: `src/config/`
 
@@ -36,14 +38,16 @@ This document provides working guidance for coding agents operating in this repo
 - Preserve existing message text/command UX unless explicitly asked to change it.
 - Avoid broad refactors across channels/config/process layers unless necessary.
 - Do not add new dependencies unless they are clearly justified.
+- Keep docs (`README.md`, `AGENTS.md`) aligned when commands/config/runtime behavior change.
 
 ## Controller Refactor Boundaries
 
 When `src/controller/controller.ts` grows:
 
 - Extract pure utility logic to `src/controller/controllerUtils.ts`.
-- Extract formatting/rendering concerns to `src/controller/controllerFormatting.ts`.
+- Extract command/response parsing helpers to `src/controller/commands.ts`.
 - Extract persistence/file I/O concerns to `src/controller/routingPersistence.ts`.
+- Keep Matrix-specific rendering in `src/channels/matrix/matrixFormatting.ts`.
 - Keep `BotController` focused on orchestration and event wiring.
 
 ## Validation Expectations
@@ -59,6 +63,7 @@ If edits touch runtime flow significantly, also run:
 ## Config & Persistence Notes
 
 - Default route persistence path is configured via `controller.routingPersistencePath`.
+- `controller.commandPrefix` is parsed in config, but Matrix command parsing currently accepts canonical commands with or without `!`.
 - Example state file: `slimebot-routing.json`.
 - Main app config files in repo root:
   - `slimebot.yaml`
