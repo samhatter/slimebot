@@ -133,7 +133,7 @@ export class BotController {
 
       const threadId = this.roomThreadRoutes.get(roomId);
       if (!threadId) {
-        await this.sendTextMessage(roomId, "No Codex thread is mapped to this room yet. Run !new to create one.");
+        await this.channel.sendTextMessage(roomId, "No Codex thread is mapped to this room yet. Run !new to create one.");
         return;
       }
 
@@ -199,10 +199,10 @@ export class BotController {
       const error = record?.["error"];
 
       if (success === true) {
-        await this.sendTextMessage(roomId, "Login completed successfully.");
+        await this.channel.sendSystemMessage(roomId, "Login completed successfully.");
       } else {
         const errorText = typeof error === "string" && error ? error : "unknown error";
-        await this.sendTextMessage(roomId, `Login failed: ${errorText}`);
+        await this.channel.sendSystemMessage(roomId, `Login failed: ${errorText}`);
       }
 
       this.pendingLoginRedirectUri = undefined;
@@ -238,7 +238,7 @@ export class BotController {
 
         const roomId = this.getRoomIdByThreadId(threadId);
         if (roomId) {
-          await this.sendTextMessage(
+          await this.channel.sendSystemMessage(
             roomId,
             turnId
               ? `Interrupt completed for turn ${turnId} on thread ${threadId}.`
@@ -461,7 +461,7 @@ export class BotController {
       }
     } catch (error) {
       this.logWarn(`Failed to send message to Codex thread ${threadId}: ${String(error)}`);
-      await this.sendTextMessage(roomId, `Failed to send message to Codex: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to send message to Codex: ${String(error)}`);
     }
   }
 
@@ -659,7 +659,7 @@ export class BotController {
   /** Creates a new thread and maps it to the current room. */
   private async handleNewCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -667,12 +667,12 @@ export class BotController {
       const result = await this.codexAppServer.threadStart({});
       const threadId = asRecord(asRecord(result)?.["thread"])?.["id"];
       if (!threadId) {
-        await this.sendTextMessage(roomId, `Thread was created but no thread id was returned:\n${stringifyJson(result)}`);
+        await this.channel.sendSystemMessage(roomId, `Thread was created but no thread id was returned:\n${stringifyJson(result)}`);
         return;
       }
 
       if (typeof threadId !== "string") {
-        await this.sendTextMessage(roomId, `Thread response had invalid thread.id:\n${stringifyJson(result)}`);
+        await this.channel.sendSystemMessage(roomId, `Thread response had invalid thread.id:\n${stringifyJson(result)}`);
         return;
       }
 
@@ -680,14 +680,14 @@ export class BotController {
       this.roomThreadRoutes.set(roomId, threadId);
       this.persistRoomThreadRoutes();
 
-      await this.sendTextMessage(
+      await this.channel.sendSystemMessage(
         roomId,
         previousThreadId
           ? `Mapped room to new thread ${threadId} (replaced ${previousThreadId}).`
           : `Mapped room to new thread ${threadId}.`
       );
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to create a new thread: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to create a new thread: ${String(error)}`);
       this.logWarn(`Failed to create a new thread for room ${roomId}: ${String(error)}`);
     }
   }
@@ -695,13 +695,13 @@ export class BotController {
   /** Resumes an existing thread and maps it to the current room. */
   private async handleResumeCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
     const threadId = command.args[0]?.trim();
     if (!threadId) {
-      await this.sendTextMessage(roomId, "Usage: !resume <threadId>");
+      await this.channel.sendSystemMessage(roomId, "Usage: !resume <threadId>");
       return;
     }
 
@@ -709,7 +709,7 @@ export class BotController {
       const result = await this.codexAppServer.threadResume({ threadId });
       const resumedThreadId = asRecord(asRecord(result)?.["thread"])?.["id"];
       if (typeof resumedThreadId !== "string" || !resumedThreadId) {
-        await this.sendTextMessage(roomId, `Thread resume response missing thread.id:\n${stringifyJson(result)}`);
+        await this.channel.sendSystemMessage(roomId, `Thread resume response missing thread.id:\n${stringifyJson(result)}`);
         return;
       }
 
@@ -717,14 +717,14 @@ export class BotController {
       this.roomThreadRoutes.set(roomId, resumedThreadId);
       this.persistRoomThreadRoutes();
 
-      await this.sendTextMessage(
+      await this.channel.sendSystemMessage(
         roomId,
         previousThreadId
           ? `Resumed ${resumedThreadId} and remapped room (replaced ${previousThreadId}).`
           : `Resumed ${resumedThreadId} and mapped it to this room.`
       );
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to resume thread ${threadId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to resume thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to resume thread ${threadId}: ${String(error)}`);
     }
   }
@@ -732,7 +732,7 @@ export class BotController {
   /** Handles thread subcommands like list and status. */
   private async handleThreadCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -750,7 +750,7 @@ export class BotController {
         });
         await this.channel.sendThreadList(roomId, result, archived);
       } catch (error) {
-        await this.sendTextMessage(roomId, `Failed to list threads: ${String(error)}`);
+        await this.channel.sendSystemMessage(roomId, `Failed to list threads: ${String(error)}`);
         this.logWarn(`Failed to list threads: ${String(error)}`);
       }
       return;
@@ -764,7 +764,8 @@ export class BotController {
 
       try {
         const result = await this.codexAppServer.threadRead({ threadId });
-        const threadRecord = asRecord(asRecord(result)?.["thread"]);
+        const resultRecord = asRecord(result);
+        const threadRecord = asRecord(resultRecord?.["thread"]);
         if (!threadRecord) {
           await this.channel.sendJsonResponse(roomId, "Thread status response", result);
           return;
@@ -772,23 +773,17 @@ export class BotController {
 
         const name = readStringFromAny(threadRecord["name"]) ?? "-";
         const preview = readStringFromAny(threadRecord["preview"]) ?? "-";
-        const updatedAt = readStringFromAny(threadRecord["updatedAt"], threadRecord["createdAt"]) ?? "-";
+        const updatedAt = readStringFromAny(threadRecord["updatedAt"]) ?? "-";
         const modelProvider = readStringFromAny(threadRecord["modelProvider"]) ?? "-";
         const selectedModel =
-          this.configuredModelByThreadId.get(threadId)
-          ??
-          readStringFromAny(
-            threadRecord["model"],
-            asRecord(threadRecord["settings"])?.["model"],
-            asRecord(threadRecord["defaultSettings"])?.["model"]
-          )
+          readStringFromAny(threadRecord["model"])
           ?? this.selectedModelByThreadId.get(threadId)
           ?? "-";
         const statusType = readStringFromAny(asRecord(threadRecord["status"])?.["type"], threadRecord["status"]) ?? "-";
         const agentNickname = readStringFromAny(threadRecord["agentNickname"]) ?? "-";
         const agentRole = readStringFromAny(threadRecord["agentRole"]) ?? "-";
         const archived = threadRecord["archived"] === true ? "yes" : "no";
-        const defaultEffort = extractThreadDefaultEffort(threadRecord) ?? "default";
+        const defaultEffort = extractThreadDefaultEffort(resultRecord) ?? "default";
 
         this.updateTokenUsageForThread(threadId, threadRecord);
         const tokenUsage = this.tokenUsageByThreadId.get(threadId);
@@ -819,19 +814,19 @@ export class BotController {
           defaultEffort
         });
       } catch (error) {
-        await this.sendTextMessage(roomId, `Failed to read thread ${threadId}: ${String(error)}`);
+        await this.channel.sendSystemMessage(roomId, `Failed to read thread ${threadId}: ${String(error)}`);
         this.logWarn(`Failed to read thread ${threadId}: ${String(error)}`);
       }
       return;
     }
 
-    await this.sendTextMessage(roomId, "Usage: !thread <list|status> [args]");
+    await this.channel.sendSystemMessage(roomId, "Usage: !thread <list|status> [args]");
   }
 
   /** Rolls back turns for a thread by a requested number of turns. */
   private async handleRollbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -847,9 +842,9 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.threadRollback({ threadId, numTurns });
-      await this.sendTextMessage(roomId, `Rollback completed for ${threadId}.\n${stringifyJson(result)}`);
+      await this.channel.sendSystemMessage(roomId, `Rollback completed for ${threadId}.\n${stringifyJson(result)}`);
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to rollback thread ${threadId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to rollback thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to rollback thread ${threadId}: ${String(error)}`);
     }
   }
@@ -857,7 +852,7 @@ export class BotController {
   /** Starts context compaction for a thread when not already in progress. */
   private async handleCompactCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -867,7 +862,7 @@ export class BotController {
     }
 
     if (this.pendingCompactionByThreadId.has(threadId)) {
-      await this.sendTextMessage(roomId, `Compaction is already in progress for ${threadId}.`);
+      await this.channel.sendSystemMessage(roomId, `Compaction is already in progress for ${threadId}.`);
       return;
     }
 
@@ -875,10 +870,10 @@ export class BotController {
 
     try {
       await this.codexAppServer.threadCompactStart({ threadId });
-      await this.sendTextMessage(roomId, `Started compaction for ${threadId}.`);
+      await this.channel.sendSystemMessage(roomId, `Started compaction for ${threadId}.`);
     } catch (error) {
       this.pendingCompactionByThreadId.delete(threadId);
-      await this.sendTextMessage(roomId, `Failed to compact thread ${threadId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to compact thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to compact thread ${threadId}: ${String(error)}`);
     }
   }
@@ -886,7 +881,7 @@ export class BotController {
   /** Archives the target thread. */
   private async handleArchiveCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -897,9 +892,9 @@ export class BotController {
 
     try {
       await this.codexAppServer.threadArchive({ threadId });
-      await this.sendTextMessage(roomId, `Archived thread ${threadId}.`);
+      await this.channel.sendSystemMessage(roomId, `Archived thread ${threadId}.`);
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to archive thread ${threadId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to archive thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to archive thread ${threadId}: ${String(error)}`);
     }
   }
@@ -907,7 +902,7 @@ export class BotController {
   /** Unarchives the target thread. */
   private async handleUnarchiveCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -918,9 +913,9 @@ export class BotController {
 
     try {
       const result = await this.codexAppServer.threadUnarchive({ threadId });
-      await this.sendTextMessage(roomId, `Unarchived thread ${threadId}.\n${stringifyJson(result)}`);
+      await this.channel.sendSystemMessage(roomId, `Unarchived thread ${threadId}.\n${stringifyJson(result)}`);
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to unarchive thread ${threadId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to unarchive thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to unarchive thread ${threadId}: ${String(error)}`);
     }
   }
@@ -928,7 +923,7 @@ export class BotController {
   /** Requests interruption of the currently in-flight turn for a thread. */
   private async handleInterruptCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -939,13 +934,13 @@ export class BotController {
 
     const turnId = this.inFlightTurnByThreadId.get(threadId);
     if (!turnId) {
-      await this.sendTextMessage(roomId, `No in-flight turn found for thread ${threadId}.`);
+      await this.channel.sendSystemMessage(roomId, `No in-flight turn found for thread ${threadId}.`);
       return;
     }
 
     const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
     if (pendingInterruptTurnId && pendingInterruptTurnId === turnId) {
-      await this.sendTextMessage(roomId, `Interrupt is already in progress for turn ${turnId}.`);
+      await this.channel.sendSystemMessage(roomId, `Interrupt is already in progress for turn ${turnId}.`);
       return;
     }
 
@@ -953,10 +948,10 @@ export class BotController {
 
     try {
       await this.codexAppServer.turnInterrupt({ threadId, turnId });
-      await this.sendTextMessage(roomId, `Interrupt requested for turn ${turnId}. You'll be notified when it completes.`);
+      await this.channel.sendSystemMessage(roomId, `Interrupt requested for turn ${turnId}. You'll be notified when it completes.`);
     } catch (error) {
       this.pendingInterruptByThreadId.delete(threadId);
-      await this.sendTextMessage(roomId, `Failed to interrupt turn ${turnId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to interrupt turn ${turnId}: ${String(error)}`);
       this.logWarn(`Failed to interrupt turn ${turnId} on thread ${threadId}: ${String(error)}`);
     }
   }
@@ -964,13 +959,13 @@ export class BotController {
   /** Sends accept/decline decisions for pending approval requests. */
   private async handleApprovalDecisionCommand(roomId: string, decision: "accept" | "decline"): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
     const pendingApproval = this.pendingApprovalByRoomId.get(roomId);
     if (!pendingApproval) {
-      await this.sendTextMessage(roomId, "No pending approval request in this room.");
+      await this.channel.sendSystemMessage(roomId, "No pending approval request in this room.");
       return;
     }
 
@@ -987,14 +982,14 @@ export class BotController {
       });
       this.pendingApprovalByRoomId.delete(roomId);
       this.pendingApprovalRoomByRequestId.delete(String(requestId));
-      await this.sendTextMessage(roomId, "Pending approval request could not be handled.");
+      await this.channel.sendSystemMessage(roomId, "Pending approval request could not be handled.");
       return;
     }
 
     this.pendingApprovalByRoomId.delete(roomId);
     this.pendingApprovalRoomByRequestId.delete(String(requestId));
 
-    await this.sendTextMessage(
+    await this.channel.sendSystemMessage(
       roomId,
       decision === "accept" ? "Approval sent to Codex." : "Decline sent to Codex."
     );
@@ -1003,7 +998,7 @@ export class BotController {
   /** Lists available models from Codex and sends formatted output. */
   private async handleModelsCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -1011,7 +1006,7 @@ export class BotController {
       const result = await this.codexAppServer.modelList({ includeHidden: true });
       await this.channel.sendModelList(roomId, result);
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to list models: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to list models: ${String(error)}`);
       this.logWarn(`Failed to list models: ${String(error)}`);
     }
   }
@@ -1019,13 +1014,13 @@ export class BotController {
   /** Sets the active model for subsequent turns on a thread. */
   private async handleModelCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
     const modelId = command.args[0]?.trim();
     if (!modelId) {
-      await this.sendTextMessage(roomId, "Usage: !model <modelId> [threadId]");
+      await this.channel.sendSystemMessage(roomId, "Usage: !model <modelId> [threadId]");
       return;
     }
 
@@ -1038,9 +1033,9 @@ export class BotController {
       await this.codexAppServer.threadResume({ threadId, model: modelId });
       this.configuredModelByThreadId.set(threadId, modelId);
       this.selectedModelByThreadId.set(threadId, modelId);
-      await this.sendTextMessage(roomId, `Set model for ${threadId} to ${modelId}.`);
+      await this.channel.sendSystemMessage(roomId, `Set model for ${threadId} to ${modelId}.`);
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to set model for ${threadId}: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to set model for ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to set model for ${threadId}: ${String(error)}`);
     }
   }
@@ -1048,14 +1043,14 @@ export class BotController {
   /** Handles account read and account rate-limit subcommands. */
   private async handleAccountCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
     const subcommand = command.args[0]?.trim().toLowerCase();
     if (subcommand === "ratelimits" || subcommand === "rate-limits") {
       if (!this.latestAccountRateLimits) {
-        await this.sendTextMessage(
+        await this.channel.sendSystemMessage(
           roomId,
           "No account rate-limit updates received yet. Send a request first, then try !account ratelimits again."
         );
@@ -1070,7 +1065,7 @@ export class BotController {
       const result = await this.codexAppServer.accountRead({});
       await this.channel.sendJsonResponse(roomId, "Account response", result);
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to read account: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to read account: ${String(error)}`);
       this.logWarn(`Failed to read account: ${String(error)}`);
     }
   }
@@ -1084,7 +1079,7 @@ export class BotController {
     if (!firstArgLower) {
       const mappedThreadId = this.roomThreadRoutes.get(roomId);
       if (!mappedThreadId) {
-        await this.sendTextMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
+        await this.channel.sendSystemMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
         return;
       }
 
@@ -1092,8 +1087,8 @@ export class BotController {
       if (this.codexAppServer) {
         try {
           const threadReadResult = await this.codexAppServer.threadRead({ threadId: mappedThreadId });
-          const threadRecord = asRecord(asRecord(threadReadResult)?.["thread"]);
-          const effort = extractThreadDefaultEffort(threadRecord);
+          const threadReadRecord = asRecord(threadReadResult);
+          const effort = extractThreadDefaultEffort(threadReadRecord);
           if (effort) {
             codexEffort = effort;
           }
@@ -1104,7 +1099,7 @@ export class BotController {
 
       const effort = this.reasoningEffortByThreadId.get(mappedThreadId);
       const effectiveEffort = effort ?? codexEffort ?? "default";
-      await this.sendTextMessage(
+      await this.channel.sendSystemMessage(
         roomId,
         `Effective next turn reasoning for ${mappedThreadId}: ${effectiveEffort}`
       );
@@ -1120,8 +1115,8 @@ export class BotController {
       if (this.codexAppServer) {
         try {
           const threadReadResult = await this.codexAppServer.threadRead({ threadId });
-          const threadRecord = asRecord(asRecord(threadReadResult)?.["thread"]);
-          codexEffort = extractThreadDefaultEffort(threadRecord);
+          const threadReadRecord = asRecord(threadReadResult);
+          codexEffort = extractThreadDefaultEffort(threadReadRecord);
         } catch (error) {
           this.logWarn(`Failed to read thread ${threadId} for reasoning status: ${String(error)}`);
         }
@@ -1129,7 +1124,7 @@ export class BotController {
 
       const effort = this.reasoningEffortByThreadId.get(threadId);
       const effectiveEffort = effort ?? codexEffort ?? "default";
-      await this.sendTextMessage(
+      await this.channel.sendSystemMessage(
         roomId,
         `Effective next turn reasoning for ${threadId}: ${effectiveEffort}`
       );
@@ -1143,18 +1138,18 @@ export class BotController {
 
     if (isOff) {
       this.reasoningEffortByThreadId.delete(threadId);
-      await this.sendTextMessage(roomId, `Reasoning for ${threadId} reset to default (in-memory, not persisted).`);
+      await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} reset to default (in-memory, not persisted).`);
       return;
     }
 
     this.reasoningEffortByThreadId.set(threadId, firstArgLower);
-    await this.sendTextMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
+    await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
   }
 
   /** Starts the ChatGPT login flow and stores callback context for completion. */
   private async handleLoginCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
@@ -1165,19 +1160,19 @@ export class BotController {
       const authUrl = getAuthUrlFromLoginResult(loginResult);
 
       if (!authUrl) {
-        await this.sendTextMessage(roomId, "Login started, but no auth URL was returned.");
+        await this.channel.sendSystemMessage(roomId, "Login started, but no auth URL was returned.");
         return;
       }
 
       this.loginRoomId = roomId;
       this.pendingLoginRedirectUri = getRedirectUriFromAuthUrl(authUrl);
 
-      await this.sendTextMessage(
+      await this.channel.sendSystemMessage(
         roomId,
         `Open this URL to sign in: ${authUrl}\nAfter approving, paste the full callback URL here using: !callback <callback-url>`
       );
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to start login: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to start login: ${String(error)}`);
       this.logWarn(`Failed to start chatgpt login flow: ${String(error)}`);
     }
   }
@@ -1185,19 +1180,19 @@ export class BotController {
   /** Accepts callback URL input and triggers login callback inside the runtime. */
   private async handleCallbackCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
-      await this.sendTextMessage(roomId, "Codex app server is not configured.");
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
     const callbackInput = command.args[0]?.trim();
     if (!callbackInput) {
-      await this.sendTextMessage(roomId, "Usage: !callback <full-callback-url>");
+      await this.channel.sendSystemMessage(roomId, "Usage: !callback <full-callback-url>");
       return;
     }
 
     const callbackUrl = normalizeCallbackUrl(callbackInput, this.pendingLoginRedirectUri);
     if (!callbackUrl) {
-      await this.sendTextMessage(roomId, "Could not parse callback URL. Paste the full URL from your browser.");
+      await this.channel.sendSystemMessage(roomId, "Could not parse callback URL. Paste the full URL from your browser.");
       return;
     }
 
@@ -1213,7 +1208,7 @@ export class BotController {
           signal: abortController.signal
         });
 
-        await this.sendTextMessage(
+        await this.channel.sendSystemMessage(
           roomId,
           `Callback accepted inside container (status ${response.status}). Waiting for login completion notification…`
         );
@@ -1221,7 +1216,7 @@ export class BotController {
         clearTimeout(timeout);
       }
     } catch (error) {
-      await this.sendTextMessage(roomId, `Failed to trigger callback URL: ${String(error)}`);
+      await this.channel.sendSystemMessage(roomId, `Failed to trigger callback URL: ${String(error)}`);
       this.logWarn(`Failed to trigger callback URL: ${String(error)}`);
     }
   }
@@ -1273,7 +1268,7 @@ export class BotController {
       return threadId;
     }
 
-    void this.sendTextMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
+    void this.channel.sendSystemMessage(roomId, `No mapped thread for this room. Usage: ${usage}`);
     return undefined;
   }
 
@@ -1335,11 +1330,6 @@ export class BotController {
   /** Persists current room-thread routes to disk. */
   private persistRoomThreadRoutes(): void {
     persistRoomThreadRoutes(this.routingPersistencePath, this.roomThreadRoutes, this.logWarn.bind(this));
-  }
-
-  /** Sends a system/status message to a room through the active channel. */
-  private async sendTextMessage(roomId: string, body: string): Promise<void> {
-    await this.channel.sendSystemMessage(roomId, body);
   }
 
   /** Writes info-level controller logs. */

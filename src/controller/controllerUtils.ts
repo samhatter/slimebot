@@ -223,16 +223,7 @@ export function extractThreadDefaultEffort(record: Record<string, unknown> | und
     return undefined;
   }
 
-  return readStringFromAny(
-    record["effort"],
-    record["defaultReasoningEffort"],
-    record["reasoningEffort"],
-    asRecord(record["settings"])?.["effort"],
-    asRecord(record["settings"])?.["reasoningEffort"],
-    asRecord(record["defaultSettings"])?.["effort"],
-    asRecord(record["turnDefaults"])?.["effort"],
-    asRecord(record["config"])?.["effort"]
-  );
+  return readStringFromAny(record["reasoningEffort"]);
 }
 
 /** Extracts redirect URI from login auth URL query params. */
