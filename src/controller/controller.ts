@@ -11,6 +11,16 @@ import { createChannel } from "../channels/index.js";
 import type { AppConfig } from "../config/config.js";
 import { CodexAppServerProcess } from "../codexProcess/codexAppServerProcess.js";
 import {
+  getAgentMessageFromItemCompleted,
+  parseCodexServerNotification,
+  parseCodexServerRequest,
+  type AccountRateLimitsUpdatedNotification,
+  type ItemCompletedNotification,
+  type ItemStartedNotification,
+  type TurnCompletedNotification,
+  type TurnStartedNotification
+} from "../codexProcess/codexV2Schema.js";
+import {
   asRecord,
   getAuthUrlFromLoginResult
 } from "./commands.js";
@@ -187,14 +197,20 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:account/login/completed", async (params: unknown) => {
+      const notification = parseCodexServerNotification({
+        method: "account/login/completed",
+        params
+      });
+      if (!notification || notification.method !== "account/login/completed") {
+        return;
+      }
+
       const roomId = this.loginRoomId;
       if (!roomId) {
         return;
       }
 
-      const record = asRecord(params);
-      const success = record?.["success"];
-      const error = record?.["error"];
+      const { success, error } = notification.params;
 
       if (success === true) {
         await this.channel.sendSystemMessage(roomId, "Login completed successfully.");
@@ -208,10 +224,16 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:turn/started", (params: unknown) => {
-      const record = asRecord(params);
-      const turn = asRecord(record?.["turn"]);
-      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
+      const notification = parseCodexServerNotification({
+        method: "turn/started",
+        params
+      });
+      if (!notification || notification.method !== "turn/started") {
+        return;
+      }
+
+      const { threadId } = notification.params as TurnStartedNotification;
+      const turnId = notification.params.turn.id;
 
       if (!threadId || !turnId) {
         return;
@@ -221,10 +243,16 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
-      const record = asRecord(params);
-      const turn = asRecord(record?.["turn"]);
-      const threadId = readStringFromAny(record?.["threadId"], turn?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"], turn?.["id"]);
+      const notification = parseCodexServerNotification({
+        method: "turn/completed",
+        params
+      });
+      if (!notification || notification.method !== "turn/completed") {
+        return;
+      }
+
+      const { threadId } = notification.params as TurnCompletedNotification;
+      const turnId = notification.params.turn.id;
 
       if (!threadId) {
         return;
@@ -258,9 +286,15 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:model/rerouted", (params: unknown) => {
-      const record = asRecord(params);
-      const threadId = readStringFromAny(record?.["threadId"]);
-      const toModel = readStringFromAny(record?.["toModel"]);
+      const notification = parseCodexServerNotification({
+        method: "model/rerouted",
+        params
+      });
+      if (!notification || notification.method !== "model/rerouted") {
+        return;
+      }
+
+      const { threadId, toModel } = notification.params;
       if (!threadId || !toModel) {
         return;
       }
@@ -269,27 +303,46 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:thread/tokenUsage/updated", (params: unknown) => {
-      const record = asRecord(params);
-      const threadId = readStringFromAny(record?.["threadId"]);
+      const notification = parseCodexServerNotification({
+        method: "thread/tokenUsage/updated",
+        params
+      });
+      if (!notification || notification.method !== "thread/tokenUsage/updated") {
+        return;
+      }
+
+      const { threadId, tokenUsage } = notification.params;
       if (!threadId) {
         return;
       }
 
-      this.updateTokenUsageForThread(threadId, record);
+      this.updateTokenUsageForThread(threadId, { tokenUsage });
     });
 
     this.codexAppServer.on("notification:account/rateLimits/updated", (params: unknown) => {
-      const record = asRecord(params);
-      this.latestAccountRateLimits = record?.["rateLimits"] ?? params;
+      const notification = parseCodexServerNotification({
+        method: "account/rateLimits/updated",
+        params
+      });
+      if (!notification || notification.method !== "account/rateLimits/updated") {
+        return;
+      }
+
+      this.latestAccountRateLimits = (notification.params as AccountRateLimitsUpdatedNotification).rateLimits;
     });
 
     this.codexAppServer.on("notification:item/started", async (params: unknown) => {
-      const record = asRecord(params);
-      const item = asRecord(record?.["item"]);
-      const threadId = readStringFromAny(record?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"]);
-      const itemId = readStringFromAny(item?.["id"]);
-      const itemType = readStringFromAny(item?.["type"]);
+      const notification = parseCodexServerNotification({
+        method: "item/started",
+        params
+      });
+      if (!notification || notification.method !== "item/started") {
+        return;
+      }
+
+      const { threadId, turnId, item } = notification.params as ItemStartedNotification;
+      const itemId = readStringFromAny(item.id);
+      const itemType = readStringFromAny(item.type);
 
       if (!threadId || !itemId || !itemType || !item) {
         return;
@@ -326,12 +379,17 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:item/completed", async (params: unknown) => {
-      const record = asRecord(params);
-      const item = asRecord(record?.["item"]);
-      const threadId = readStringFromAny(record?.["threadId"]);
-      const turnId = readStringFromAny(record?.["turnId"]);
-      const itemId = readStringFromAny(item?.["id"]);
-      const itemType = readStringFromAny(item?.["type"]);
+      const notification = parseCodexServerNotification({
+        method: "item/completed",
+        params
+      });
+      if (!notification || notification.method !== "item/completed") {
+        return;
+      }
+
+      const { threadId, turnId, item } = notification.params as ItemCompletedNotification;
+      const itemId = readStringFromAny(item.id);
+      const itemType = readStringFromAny(item.type);
 
       if (!threadId || !itemId || !itemType) {
         return;
@@ -360,7 +418,7 @@ export class BotController {
 
       const elapsedMs = Math.max(0, Date.now() - pendingToolActivity.startedAtMs);
       const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
-      const itemError = readStringFromAny(asRecord(item?.["error"])?.["message"], item?.["error"]);
+      const itemError = readStringFromAny(asRecord(item.error)?.["message"], item.error);
       const completionLabel = itemError ? "Tool failed" : "Tool completed";
       const completionSnapshot = item ? extractToolEventSnapshot(item) : undefined;
 
@@ -374,8 +432,15 @@ export class BotController {
     });
 
     this.codexAppServer.on("notification:serverRequest/resolved", (params: unknown) => {
-      const record = asRecord(params);
-      const requestId = readStringFromAny(record?.["requestId"]);
+      const notification = parseCodexServerNotification({
+        method: "serverRequest/resolved",
+        params
+      });
+      if (!notification || notification.method !== "serverRequest/resolved") {
+        return;
+      }
+
+      const requestId = readStringFromAny(notification.params.requestId);
       if (!requestId) {
         return;
       }
@@ -473,10 +538,13 @@ export class BotController {
       return;
     }
 
-    const record = asRecord(params);
-    const threadId = readStringFromAny(record?.["threadId"]);
-    const turnId = readStringFromAny(record?.["turnId"]);
-    const itemId = readStringFromAny(record?.["itemId"]);
+    const request = parseCodexServerRequest(requestId, method, params);
+    if (!request) {
+      this.codexAppServer.respondSuccess(requestId, { decision: "decline" });
+      return;
+    }
+
+    const { threadId, turnId, itemId } = request.params;
 
     if (!threadId || !turnId || !itemId) {
       this.codexAppServer.respondSuccess(requestId, { decision: "decline" });
@@ -501,10 +569,10 @@ export class BotController {
     this.pendingApprovalByRoomId.set(roomId, pendingApproval);
     this.pendingApprovalRoomByRequestId.set(String(requestId), roomId);
 
-    const reason = readStringFromAny(record?.["reason"]);
-    const approvalType = method === "item/fileChange/requestApproval" ? "file change" : "command";
-    const commandPreview = Array.isArray(record?.["command"])
-      ? (record?.["command"] as unknown[]).filter((part): part is string => typeof part === "string").join(" ")
+    const reason = readStringFromAny(request.params.reason);
+    const approvalType = request.method === "item/fileChange/requestApproval" ? "file change" : "command";
+    const commandPreview = request.method === "item/commandExecution/requestApproval"
+      ? readStringFromAny(request.params.command)
       : "";
 
     await this.channel.sendApprovalRequest(roomId, {
@@ -528,23 +596,21 @@ export class BotController {
     const body = record["body"];
 
     if (typeof roomId !== "string" || typeof body !== "string") {
-      const method = record["method"];
-      if (method !== "item/completed") {
+      const notification = parseCodexServerNotification(message);
+      if (!notification || notification.method !== "item/completed") {
         return undefined;
       }
 
-      const params = asRecord(record["params"]);
-      const threadId = params?.["threadId"];
-      const item = asRecord(params?.["item"]);
-      const itemType = item?.["type"];
-      const itemText = item?.["text"];
-
-      if (typeof threadId !== "string" || itemType !== "agentMessage" || typeof itemText !== "string") {
+      const reply = getAgentMessageFromItemCompleted(notification.params);
+      if (!reply) {
         return undefined;
       }
+
+      const threadId = reply.threadId;
+      const itemText = reply.body;
 
       const mappedRoomId = this.getRoomIdByThreadId(threadId);
-      if (!mappedRoomId || !itemText.trim()) {
+      if (!mappedRoomId || !itemText) {
         return undefined;
       }
 
