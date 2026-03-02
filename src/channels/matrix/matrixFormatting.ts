@@ -254,7 +254,6 @@ export function formatThreadStatus(input: ChannelThreadStatusView): { body: stri
     `agent role: ${input.agentRole}`,
     `total thread token usage (input/output/total): ${input.totalInputTokens ?? "-"}/${input.totalOutputTokens ?? "-"}/${input.totalTokens ?? "-"}`,
     `last token usage (input/output/total): ${input.lastInputTokens ?? "-"}/${input.lastOutputTokens ?? "-"}/${input.lastTotalTokens ?? "-"}`,
-    `archived: ${input.archived}`,
     `default reasoning: ${input.defaultEffort}`
   ].join("\n");
 
@@ -272,7 +271,6 @@ export function formatThreadStatus(input: ChannelThreadStatusView): { body: stri
     `<li><b>agent role:</b> ${escapeHtml(input.agentRole)}</li>`,
     `<li><b>total thread token usage (input/output/total):</b> ${escapeHtml(String(input.totalInputTokens ?? "-"))}/${escapeHtml(String(input.totalOutputTokens ?? "-"))}/${escapeHtml(String(input.totalTokens ?? "-"))}</li>`,
     `<li><b>last token usage (input/output/total):</b> ${escapeHtml(String(input.lastInputTokens ?? "-"))}/${escapeHtml(String(input.lastOutputTokens ?? "-"))}/${escapeHtml(String(input.lastTotalTokens ?? "-"))}</li>`,
-    `<li><b>archived:</b> ${escapeHtml(input.archived)}</li>`,
     `<li><b>default reasoning:</b> ${escapeHtml(input.defaultEffort)}</li>`,
     "</ul>"
   ].join("");

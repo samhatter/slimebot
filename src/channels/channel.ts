@@ -22,7 +22,6 @@ export type ChannelThreadStatusView = {
   lastInputTokens?: number;
   lastOutputTokens?: number;
   lastTotalTokens?: number;
-  archived: string;
   defaultEffort: string;
 };
 

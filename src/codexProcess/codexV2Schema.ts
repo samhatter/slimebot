@@ -118,6 +118,63 @@ export type FileChangeRequestApprovalParams = {
   grantRoot?: string | null;
 };
 
+export type TokenUsageCounts = {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+};
+
+export type ThreadReadTokenUsage = {
+  total: TokenUsageCounts;
+  last: TokenUsageCounts;
+  modelContextWindow: number | null;
+};
+
+export type ThreadActiveFlag = "waitingOnApproval" | "waitingOnUserInput";
+
+export type ThreadReadStatus =
+  | { type: "notLoaded" }
+  | { type: "idle" }
+  | { type: "systemError" }
+  | { type: "active"; activeFlags: ThreadActiveFlag[] };
+
+export type ThreadSourceKind =
+  | "cli"
+  | "vscode"
+  | "exec"
+  | "appServer"
+  | "subAgent"
+  | "subAgentReview"
+  | "subAgentCompact"
+  | "subAgentThreadSpawn"
+  | "subAgentOther"
+  | "unknown";
+
+export type ThreadReadThread = {
+  id: string;
+  preview: string;
+  ephemeral?: boolean;
+  modelProvider: string;
+  createdAt: number;
+  updatedAt: number;
+  status: ThreadReadStatus;
+  path: string | null;
+  cwd: string;
+  cliVersion: string;
+  source: ThreadSourceKind;
+  agentNickname: string | null;
+  agentRole: string | null;
+  gitInfo: JsonRecord | null;
+  name: string | null;
+  turns: Turn[];
+};
+
+export type ThreadReadResult = {
+  thread: ThreadReadThread;
+};
+
 export type ServerRequest =
   | { method: "item/commandExecution/requestApproval"; id: RequestId; params: CommandExecutionRequestApprovalParams }
   | { method: "item/fileChange/requestApproval"; id: RequestId; params: FileChangeRequestApprovalParams };
@@ -268,6 +325,104 @@ function isFileChangeRequestApprovalParams(value: unknown): value is FileChangeR
   );
 }
 
+function isTokenUsageCounts(value: unknown): value is TokenUsageCounts {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value["totalTokens"] === "number"
+    && typeof value["inputTokens"] === "number"
+    && typeof value["cachedInputTokens"] === "number"
+    && typeof value["outputTokens"] === "number"
+    && typeof value["reasoningOutputTokens"] === "number"
+  );
+}
+
+function isThreadReadTokenUsage(value: unknown): value is ThreadReadTokenUsage {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isTokenUsageCounts(value["total"])
+    && isTokenUsageCounts(value["last"])
+    && (typeof value["modelContextWindow"] === "number"
+      || value["modelContextWindow"] === null)
+  );
+}
+
+function isThreadActiveFlag(value: unknown): value is ThreadActiveFlag {
+  return value === "waitingOnApproval" || value === "waitingOnUserInput";
+}
+
+function isThreadReadStatus(value: unknown): value is ThreadReadStatus {
+  if (!isRecord(value) || typeof value["type"] !== "string") {
+    return false;
+  }
+
+  const statusType = value["type"];
+  if (statusType === "notLoaded" || statusType === "idle" || statusType === "systemError") {
+    return true;
+  }
+
+  if (statusType !== "active") {
+    return false;
+  }
+
+  const activeFlags = value["activeFlags"];
+  return Array.isArray(activeFlags) && activeFlags.every((flag) => isThreadActiveFlag(flag));
+}
+
+function isThreadSourceKind(value: unknown): value is ThreadSourceKind {
+  return value === "cli"
+    || value === "vscode"
+    || value === "exec"
+    || value === "appServer"
+    || value === "subAgent"
+    || value === "subAgentReview"
+    || value === "subAgentCompact"
+    || value === "subAgentThreadSpawn"
+    || value === "subAgentOther"
+    || value === "unknown";
+}
+
+function isThreadReadThread(value: unknown): value is ThreadReadThread {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value["id"] === "string"
+    && typeof value["preview"] === "string"
+    && (typeof value["ephemeral"] === "boolean" || value["ephemeral"] === undefined)
+    && typeof value["modelProvider"] === "string"
+    && typeof value["createdAt"] === "number"
+    && typeof value["updatedAt"] === "number"
+    && isThreadReadStatus(value["status"])
+    && (typeof value["path"] === "string" || value["path"] === null)
+    && typeof value["cwd"] === "string"
+    && typeof value["cliVersion"] === "string"
+    && isThreadSourceKind(value["source"])
+    && (typeof value["agentNickname"] === "string" || value["agentNickname"] === null)
+    && (typeof value["agentRole"] === "string" || value["agentRole"] === null)
+    && (isRecord(value["gitInfo"]) || value["gitInfo"] === null)
+    && (typeof value["name"] === "string" || value["name"] === null)
+    && Array.isArray(value["turns"])
+    && value["turns"].every((turn) => isTurn(turn))
+  );
+}
+
+function isThreadReadResult(value: unknown): value is ThreadReadResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isThreadReadThread(value["thread"])
+  );
+}
+
 export function parseCodexServerNotification(message: unknown): ServerNotification | undefined {
   if (!isRecord(message) || typeof message["method"] !== "string") {
     return undefined;
@@ -318,6 +473,10 @@ export function parseCodexServerRequest(
   }
 
   return undefined;
+}
+
+export function parseThreadReadResult(value: unknown): ThreadReadResult | undefined {
+  return isThreadReadResult(value) ? value : undefined;
 }
 
 export function getAgentMessageFromItemCompleted(notification: ItemCompletedNotification): { threadId: string; body: string } | undefined {

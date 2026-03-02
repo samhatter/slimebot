@@ -14,6 +14,7 @@ import {
   getAgentMessageFromItemCompleted,
   parseCodexServerNotification,
   parseCodexServerRequest,
+  parseThreadReadResult,
   type AccountRateLimitsUpdatedNotification,
   type ItemCompletedNotification,
   type ItemStartedNotification,
@@ -27,7 +28,6 @@ import {
 import type { ControllerCommand } from "../channels/commands.js";
 import {
   describeToolLikeItem,
-  extractThreadDefaultEffort,
   extractToolEventSnapshot,
   getRedirectUriFromAuthUrl,
   getToolActivityKey,
@@ -77,9 +77,8 @@ export class BotController {
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
   private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
-  private readonly selectedModelByThreadId = new Map<string, string>();
+  private readonly modelOverrideByThreadId = new Map<string, string>();
   private readonly tokenUsageByThreadId = new Map<string, ThreadTokenUsage>();
-  private readonly configuredModelByThreadId = new Map<string, string>();
   private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
@@ -283,23 +282,6 @@ export class BotController {
       }
 
       this.clearPendingToolActivity(threadId, turnId);
-    });
-
-    this.codexAppServer.on("notification:model/rerouted", (params: unknown) => {
-      const notification = parseCodexServerNotification({
-        method: "model/rerouted",
-        params
-      });
-      if (!notification || notification.method !== "model/rerouted") {
-        return;
-      }
-
-      const { threadId, toModel } = notification.params;
-      if (!threadId || !toModel) {
-        return;
-      }
-
-      this.selectedModelByThreadId.set(threadId, toModel);
     });
 
     this.codexAppServer.on("notification:thread/tokenUsage/updated", (params: unknown) => {
@@ -511,9 +493,9 @@ export class BotController {
         turnStartParams["effort"] = reasoningEffort;
       }
 
-      const configuredModel = this.configuredModelByThreadId.get(threadId);
-      if (configuredModel) {
-        turnStartParams["model"] = configuredModel;
+      const modelOverride = this.modelOverrideByThreadId.get(threadId);
+      if (modelOverride) {
+        turnStartParams["model"] = modelOverride;
       }
 
       const result = await this.codexAppServer.turnStart(turnStartParams);
@@ -828,28 +810,28 @@ export class BotController {
 
       try {
         const result = await this.codexAppServer.threadRead({ threadId });
-        const resultRecord = asRecord(result);
-        const threadRecord = asRecord(resultRecord?.["thread"]);
-        if (!threadRecord) {
+        const parsedThreadRead = parseThreadReadResult(result);
+        if (!parsedThreadRead) {
           await this.channel.sendJsonResponse(roomId, "Thread status response", result);
           return;
         }
 
-        const name = readStringFromAny(threadRecord["name"]) ?? "-";
-        const preview = readStringFromAny(threadRecord["preview"]) ?? "-";
-        const updatedAt = readStringFromAny(threadRecord["updatedAt"]) ?? "-";
-        const modelProvider = readStringFromAny(threadRecord["modelProvider"]) ?? "-";
-        const selectedModel =
-          readStringFromAny(threadRecord["model"])
-          ?? this.selectedModelByThreadId.get(threadId)
-          ?? "-";
-        const statusType = readStringFromAny(asRecord(threadRecord["status"])?.["type"], threadRecord["status"]) ?? "-";
-        const agentNickname = readStringFromAny(threadRecord["agentNickname"]) ?? "-";
-        const agentRole = readStringFromAny(threadRecord["agentRole"]) ?? "-";
-        const archived = threadRecord["archived"] === true ? "yes" : "no";
-        const defaultEffort = extractThreadDefaultEffort(resultRecord) ?? "default";
+        const threadRecord = parsedThreadRead.thread;
 
-        this.updateTokenUsageForThread(threadId, threadRecord);
+        const name = threadRecord.name ?? "-";
+        const preview = threadRecord.preview;
+        const updatedAt = Number.isFinite(threadRecord.updatedAt)
+          ? new Date(threadRecord.updatedAt * 1000).toISOString()
+          : "-";
+        const modelProvider = threadRecord.modelProvider;
+        const selectedModel =
+          this.modelOverrideByThreadId.get(threadId)
+          ?? "default";
+        const statusType = threadRecord.status.type;
+        const agentNickname = threadRecord.agentNickname ?? "-";
+        const agentRole = threadRecord.agentRole ?? "-";
+        const defaultEffort = this.reasoningEffortByThreadId.get(threadId) ?? "default";
+
         const tokenUsage = this.tokenUsageByThreadId.get(threadId);
         const inputTokens = tokenUsage?.inputTokens;
         const outputTokens = tokenUsage?.outputTokens;
@@ -874,7 +856,6 @@ export class BotController {
           lastInputTokens,
           lastOutputTokens,
           lastTotalTokens,
-          archived,
           defaultEffort
         });
       } catch (error) {
@@ -1093,15 +1074,20 @@ export class BotController {
       return;
     }
 
-    try {
-      await this.codexAppServer.threadResume({ threadId, model: modelId });
-      this.configuredModelByThreadId.set(threadId, modelId);
-      this.selectedModelByThreadId.set(threadId, modelId);
-      await this.channel.sendSystemMessage(roomId, `Set model for ${threadId} to ${modelId}.`);
-    } catch (error) {
-      await this.channel.sendSystemMessage(roomId, `Failed to set model for ${threadId}: ${String(error)}`);
-      this.logWarn(`Failed to set model for ${threadId}: ${String(error)}`);
+    if (modelId.toLowerCase() === "default") {
+      this.modelOverrideByThreadId.delete(threadId);
+      await this.channel.sendSystemMessage(
+        roomId,
+        `Cleared model override for ${threadId}. Future turn starts will use the runtime default model.`
+      );
+      return;
     }
+
+    this.modelOverrideByThreadId.set(threadId, modelId);
+    await this.channel.sendSystemMessage(
+      roomId,
+      `Set model override for ${threadId} to ${modelId}. It will be used on future turn starts.`
+    );
   }
 
   /** Handles account read and account rate-limit subcommands. */
@@ -1147,22 +1133,8 @@ export class BotController {
         return;
       }
 
-      let codexEffort: string | undefined;
-      if (this.codexAppServer) {
-        try {
-          const threadReadResult = await this.codexAppServer.threadRead({ threadId: mappedThreadId });
-          const threadReadRecord = asRecord(threadReadResult);
-          const effort = extractThreadDefaultEffort(threadReadRecord);
-          if (effort) {
-            codexEffort = effort;
-          }
-        } catch (error) {
-          this.logWarn(`Failed to read thread ${mappedThreadId} for reasoning status: ${String(error)}`);
-        }
-      }
-
       const effort = this.reasoningEffortByThreadId.get(mappedThreadId);
-      const effectiveEffort = effort ?? codexEffort ?? "default";
+      const effectiveEffort = effort ?? "default";
       await this.channel.sendSystemMessage(
         roomId,
         `Effective next turn reasoning for ${mappedThreadId}: ${effectiveEffort}`
@@ -1175,19 +1147,8 @@ export class BotController {
 
     if (!isValidEffort && !isOff) {
       const threadId = firstArg;
-      let codexEffort: string | undefined;
-      if (this.codexAppServer) {
-        try {
-          const threadReadResult = await this.codexAppServer.threadRead({ threadId });
-          const threadReadRecord = asRecord(threadReadResult);
-          codexEffort = extractThreadDefaultEffort(threadReadRecord);
-        } catch (error) {
-          this.logWarn(`Failed to read thread ${threadId} for reasoning status: ${String(error)}`);
-        }
-      }
-
       const effort = this.reasoningEffortByThreadId.get(threadId);
-      const effectiveEffort = effort ?? codexEffort ?? "default";
+      const effectiveEffort = effort ?? "default";
       await this.channel.sendSystemMessage(
         roomId,
         `Effective next turn reasoning for ${threadId}: ${effectiveEffort}`
