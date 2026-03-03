@@ -13,6 +13,7 @@ const matrixCommandAliases: Record<string, string> = {
   s: "skip",
   r: "reasoning",
   m: "model",
+  v: "verbosity",
 };
 
 /** Parses a raw Matrix text message into a controller command, if any. */

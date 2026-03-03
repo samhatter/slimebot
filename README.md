@@ -93,6 +93,7 @@ General:
 - `!account` — read account/auth information
 - `!account ratelimits` — show latest received `account/rateLimits/updated` payload
 - `!reasoning [off|low|medium|high] [threadId]` — show or set per-thread reasoning effort
+- `!verbosity [on|off]` — show or set tool activity message verbosity (approvals unaffected)
 
 Thread operations:
 
@@ -117,6 +118,7 @@ Model & reasoning aliases:
 
 - `!m <modelId> [threadId]` — alias for `!model`
 - `!r [off|low|medium|high] [threadId]` — alias for `!reasoning`
+- `!v [on|off]` — alias for `!verbosity`
 
 Auth:
 
@@ -130,6 +132,7 @@ Auth:
 - Active turn state is tracked from `turn/started` and `turn/completed` notifications.
 - Pending approval state is tracked per room and cleared when resolved.
 - Reasoning and model overrides are in-memory settings (not persisted to disk).
+- Verbosity toggle is in-memory for the running bot process (not persisted to disk).
 
 ## Build & Check
 

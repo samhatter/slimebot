@@ -20,7 +20,8 @@ export const controllerCommandNames = [
   "models",
   "model",
   "account",
-  "reasoning"
+  "reasoning",
+  "verbosity"
 ] as const;
 
 /** Canonical controller command name. */

@@ -79,6 +79,7 @@ export class BotController {
   private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
   private readonly modelOverrideByThreadId = new Map<string, string>();
   private readonly tokenUsageByThreadId = new Map<string, ThreadTokenUsage>();
+  private toolActivityMessagesEnabled = true;
   private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
   private pendingLoginRedirectUri?: string;
@@ -358,6 +359,10 @@ export class BotController {
         return;
       }
 
+      if (!this.toolActivityMessagesEnabled) {
+        return;
+      }
+
       await this.channel.sendToolActivityStarted(roomId, {
         itemType,
         snapshot: toolSnapshot
@@ -399,6 +404,10 @@ export class BotController {
 
       const roomId = this.getRoomIdByThreadId(threadId);
       if (!roomId) {
+        return;
+      }
+
+      if (!this.toolActivityMessagesEnabled) {
         return;
       }
 
@@ -674,6 +683,9 @@ export class BotController {
       case "reasoning":
         await this.handleReasoningCommand(roomId, command);
         return;
+      case "verbosity":
+        await this.handleVerbosityCommand(roomId, command);
+        return;
       default:
         return;
     }
@@ -700,7 +712,8 @@ export class BotController {
       "- !models: List available models",
       "- !model <modelId> [threadId]: Set selected model for subsequent turns (!m)",
       "- !account [ratelimits]: Show account information or latest rate limits",
-      "- !reasoning [off|low|medium|high] [threadId]: Show or set reasoning per thread (!r)"
+      "- !reasoning [off|low|medium|high] [threadId]: Show or set reasoning per thread (!r)",
+      "- !verbosity [on|off]: Show or set tool activity message verbosity (!v)"
     ];
 
     await this.channel.sendHelp(roomId, lines);
@@ -1173,6 +1186,33 @@ export class BotController {
 
     this.reasoningEffortByThreadId.set(threadId, firstArgLower);
     await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
+  }
+
+  /** Shows or updates tool-activity message verbosity for this bot instance. */
+  private async handleVerbosityCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    const firstArg = command.args[0]?.trim().toLowerCase();
+
+    if (!firstArg) {
+      const status = this.toolActivityMessagesEnabled ? "on" : "off";
+      await this.channel.sendSystemMessage(
+        roomId,
+        `Tool activity messages are ${status}. Approval requests are always shown.`
+      );
+      return;
+    }
+
+    if (firstArg !== "on" && firstArg !== "off") {
+      await this.channel.sendSystemMessage(roomId, "Usage: !verbosity [on|off]");
+      return;
+    }
+
+    this.toolActivityMessagesEnabled = firstArg === "on";
+    await this.channel.sendSystemMessage(
+      roomId,
+      this.toolActivityMessagesEnabled
+        ? "Tool activity messages enabled. Approval requests are always shown."
+        : "Tool activity messages disabled. Approval requests are always shown."
+    );
   }
 
   /** Starts the ChatGPT login flow and stores callback context for completion. */
