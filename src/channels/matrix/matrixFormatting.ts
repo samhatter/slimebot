@@ -66,6 +66,198 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+function renderInlineMarkdown(value: string): string {
+  const escaped = escapeHtml(value);
+
+  return escaped
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+function parseMarkdownTableRow(line: string): string[] | undefined {
+  if (!line.includes("|")) {
+    return undefined;
+  }
+
+  const rawCells = line.split("|");
+  const cells = rawCells.map((cell) => cell.trim());
+
+  if (cells.length >= 2 && cells[0] === "") {
+    cells.shift();
+  }
+
+  if (cells.length >= 2 && cells[cells.length - 1] === "") {
+    cells.pop();
+  }
+
+  if (cells.length === 0 || cells.every((cell) => cell.length === 0)) {
+    return undefined;
+  }
+
+  return cells;
+}
+
+function isMarkdownTableSeparatorRow(line: string, expectedColumns: number): boolean {
+  const cells = parseMarkdownTableRow(line);
+  if (!cells || cells.length !== expectedColumns) {
+    return false;
+  }
+
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function renderMarkdownParagraphs(markdown: string): string {
+  const lines = markdown.split("\n");
+  const blocks: string[] = [];
+
+  let paragraphLines: string[] = [];
+  let listType: "ul" | "ol" | undefined;
+  let listItems: string[] = [];
+
+  const flushParagraph = (): void => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+
+    blocks.push(`<p>${paragraphLines.join("<br/>")}</p>`);
+    paragraphLines = [];
+  };
+
+  const flushList = (): void => {
+    if (!listType || listItems.length === 0) {
+      listType = undefined;
+      listItems = [];
+      return;
+    }
+
+    blocks.push(`<${listType}>${listItems.join("")}</${listType}>`);
+    listType = undefined;
+    listItems = [];
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const unorderedMatch = line.match(/^\s*[-*]\s+(.+)$/);
+    const orderedMatch = line.match(/^\s*\d+\.\s+(.+)$/);
+
+    const currentRow = parseMarkdownTableRow(line);
+    const nextLine = lines[lineIndex + 1] ?? "";
+    const isTableHeader = Boolean(
+      currentRow &&
+      currentRow.length > 0 &&
+      isMarkdownTableSeparatorRow(nextLine, currentRow.length)
+    );
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    if (isTableHeader && currentRow) {
+      flushParagraph();
+      flushList();
+
+      const headerCells = currentRow;
+      const bodyRows: string[][] = [];
+
+      lineIndex += 2;
+
+      while (lineIndex < lines.length) {
+        const row = parseMarkdownTableRow(lines[lineIndex]);
+        if (!row || row.length !== headerCells.length) {
+          lineIndex -= 1;
+          break;
+        }
+
+        bodyRows.push(row);
+        lineIndex += 1;
+      }
+
+      const thead = `<thead><tr>${headerCells.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`;
+      const tbody = bodyRows.length > 0
+        ? `<tbody>${bodyRows
+            .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`)
+            .join("")}</tbody>`
+        : "";
+
+      blocks.push(`<table>${thead}${tbody}</table>`);
+      continue;
+    }
+
+    if (unorderedMatch) {
+      flushParagraph();
+      if (listType && listType !== "ul") {
+        flushList();
+      }
+      listType = "ul";
+      listItems.push(`<li>${renderInlineMarkdown(unorderedMatch[1])}</li>`);
+      continue;
+    }
+
+    if (orderedMatch) {
+      flushParagraph();
+      if (listType && listType !== "ol") {
+        flushList();
+      }
+      listType = "ol";
+      listItems.push(`<li>${renderInlineMarkdown(orderedMatch[1])}</li>`);
+      continue;
+    }
+
+    if (listType) {
+      flushList();
+    }
+
+    paragraphLines.push(renderInlineMarkdown(line));
+  }
+
+  flushParagraph();
+  flushList();
+
+  return blocks.join("");
+}
+
+function renderMarkdownToHtml(markdown: string): string | undefined {
+  if (!markdown.trim()) {
+    return undefined;
+  }
+
+  const segments = markdown.split(/```/g);
+  const blocks: string[] = [];
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (!segment) {
+      continue;
+    }
+
+    if (index % 2 === 1) {
+      const [firstLine = "", ...restLines] = segment.split("\n");
+      const hasLanguageHint = /^[a-z0-9_+-]+$/i.test(firstLine.trim());
+      const codeBody = hasLanguageHint ? restLines.join("\n") : segment;
+      blocks.push(`<pre><code>${escapeHtml(codeBody)}</code></pre>`);
+      continue;
+    }
+
+    const paragraphHtml = renderMarkdownParagraphs(segment);
+    if (paragraphHtml) {
+      blocks.push(paragraphHtml);
+    }
+  }
+
+  return blocks.join("") || undefined;
+}
+
+export function formatMarkdownResponse(body: string): { body: string; formattedBody?: string } {
+  return {
+    body,
+    formattedBody: renderMarkdownToHtml(body)
+  };
+}
+
 /** Formats an arbitrary JSON response into plain text and HTML message bodies. */
 export function formatJsonResponse(title: string, value: unknown): { body: string; formattedBody?: string } {
   const json = toJsonSnippet(value, 7000);

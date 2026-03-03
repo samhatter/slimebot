@@ -18,6 +18,7 @@ import {
   formatCompactionCompleted,
   formatHelp,
   formatJsonResponse,
+  formatMarkdownResponse,
   formatModelList,
   formatThreadList,
   formatThreadStatus,
@@ -53,12 +54,12 @@ export class MatrixChannel extends Channel {
   }
 
   public async sendSystemMessage(roomId: string, body: string): Promise<void> {
-    await this.sendPlainText(roomId, body);
+    await this.sendMarkdownText(roomId, body);
   }
 
   /** Sends a direct Codex assistant reply. */
   public async sendCodexReply(roomId: string, body: string): Promise<void> {
-    await this.sendPlainText(roomId, body);
+    await this.sendMarkdownText(roomId, body);
   }
 
   public async sendHelp(roomId: string, lines: string[]): Promise<void> {
@@ -164,6 +165,20 @@ export class MatrixChannel extends Channel {
   /** Sends an unformatted Matrix text message. */
   private async sendPlainText(roomId: string, body: string): Promise<void> {
     await this.sendMessage(roomId, "m.text", new ChannelOutboundMessage({ body }));
+  }
+
+  /** Sends a Matrix message with markdown rendered to HTML while preserving plain body. */
+  private async sendMarkdownText(roomId: string, body: string): Promise<void> {
+    const rendered = formatMarkdownResponse(body);
+    await this.sendMessage(
+      roomId,
+      "m.text",
+      new ChannelOutboundMessage({
+        body: rendered.body,
+        formattedBody: rendered.formattedBody,
+        format: rendered.formattedBody ? "org.matrix.custom.html" : undefined
+      })
+    );
   }
 
   /** Sends a Matrix rich-text message with optional HTML body. */
