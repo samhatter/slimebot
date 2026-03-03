@@ -50,3 +50,14 @@ test("renders markdown tables", () => {
     "<table><thead><tr><th>Name</th><th>Score</th></tr></thead><tbody><tr><td>Alice</td><td>10</td></tr><tr><td>Bob</td><td>8</td></tr></tbody></table>"
   );
 });
+
+test("renders inline markdown inside table cells", () => {
+  const result = formatMarkdownResponse(
+    "| Name | Notes |\n| --- | --- |\n| **Alice** | uses `goplaces` |\n| Bob | see [docs](https://example.com) and *italics* |"
+  );
+
+  assert.equal(
+    result.formattedBody,
+    '<table><thead><tr><th>Name</th><th>Notes</th></tr></thead><tbody><tr><td><strong>Alice</strong></td><td>uses <code>goplaces</code></td></tr><tr><td>Bob</td><td>see <a href="https://example.com">docs</a> and <em>italics</em></td></tr></tbody></table>'
+  );
+});
