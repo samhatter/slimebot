@@ -15,7 +15,7 @@ FROM node:22-bookworm AS runner
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates ripgrep \
 	&& rm -rf /var/lib/apt/lists/* \
-	&& mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex
+	&& mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex /var/lib/slimebot/logs
 
 WORKDIR /app
 ENV NODE_ENV=production
@@ -23,6 +23,10 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json* ./
 COPY --from=builder /app/dist ./dist
 COPY --from=deps /app/node_modules ./node_modules
+
+RUN chown -R node:node /app /var/lib/slimebot
+
+USER node
  
 VOLUME ["/var/lib/slimebot/workspace", "/var/lib/slimebot/codex"]
 
