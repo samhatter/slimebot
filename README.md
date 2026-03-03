@@ -73,6 +73,7 @@ Key sections:
 - `controller`
   - `commandPrefix` (currently parsed but not enforced by Matrix command parsing)
   - `routingPersistencePath`
+  - `threadStatePersistencePath`
 - `codex`
   - command and args used to launch app-server
 
@@ -132,7 +133,7 @@ Auth:
 - If steering fails (stale turn state), Slimebot falls back to `turn/start`.
 - Active turn state is tracked from `turn/started` and `turn/completed` notifications.
 - Pending approval state is tracked per room and cleared when resolved.
-- Reasoning and model overrides are in-memory settings (not persisted to disk).
+- Per-thread controller state (reasoning/model overrides, token usage, and active-turn metadata) is persisted to `controller.threadStatePersistencePath`.
 - Verbosity toggle is in-memory for the running bot process (not persisted to disk).
 
 ## Build & Check

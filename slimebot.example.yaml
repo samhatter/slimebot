@@ -9,6 +9,7 @@ channel:
 controller:
   commandPrefix: "!"
   routingPersistencePath: "/app/slimebot-routing.json"
+  threadStatePersistencePath: "/app/slimebot-thread-state.json"
 
 codex:
   command: "/app/node_modules/.bin/codex"

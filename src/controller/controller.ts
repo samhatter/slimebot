@@ -37,6 +37,7 @@ import {
   stringifyJson
 } from "./controllerUtils.js";
 import { loadPersistedRoomThreadRoutes, persistRoomThreadRoutes } from "./routingPersistence.js";
+import { loadPersistedThreadState, persistThreadState as persistThreadStateFile } from "./threadStatePersistence.js";
 
 type PendingApprovalRequest = {
   requestId: number | string;
@@ -65,20 +66,25 @@ type ThreadTokenUsage = {
   lastTotalTokens?: number;
 };
 
+type ThreadState = {
+  inFlightTurnId?: string;
+  pendingCompaction?: boolean;
+  pendingInterruptTurnId?: string;
+  reasoningEffort?: ReasoningEffort;
+  modelOverride?: string;
+  tokenUsage?: ThreadTokenUsage;
+};
+
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
   private readonly routingPersistencePath: string;
+  private readonly threadStatePersistencePath: string;
   private readonly roomThreadRoutes = new Map<string, string>();
-  private readonly inFlightTurnByThreadId = new Map<string, string>();
-  private readonly pendingCompactionByThreadId = new Set<string>();
-  private readonly pendingInterruptByThreadId = new Map<string, string>();
+  private readonly threadStateByThreadId = new Map<string, ThreadState>();
   private readonly pendingToolActivityByKey = new Map<string, PendingToolActivity>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
-  private readonly reasoningEffortByThreadId = new Map<string, ReasoningEffort>();
-  private readonly modelOverrideByThreadId = new Map<string, string>();
-  private readonly tokenUsageByThreadId = new Map<string, ThreadTokenUsage>();
   private toolActivityMessagesEnabled = true;
   private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
@@ -90,7 +96,9 @@ export class BotController {
   public constructor(appConfig: AppConfig) {
     this.channel = createChannel(appConfig.channel);
     this.routingPersistencePath = resolve(appConfig.controller.routingPersistencePath);
+    this.threadStatePersistencePath = resolve(appConfig.controller.threadStatePersistencePath);
     this.loadRoomThreadRoutes();
+    this.loadThreadState();
 
     if (appConfig.codex.command) {
       this.codexAppServer = new CodexAppServerProcess(
@@ -243,7 +251,7 @@ export class BotController {
         return;
       }
 
-      this.inFlightTurnByThreadId.set(threadId, turnId);
+      this.setThreadInFlightTurnId(threadId, turnId);
 
       const roomId = this.getRoomIdByThreadId(threadId);
       if (roomId) {
@@ -272,9 +280,9 @@ export class BotController {
         void this.channel.indicateTurnEnded(roomId);
       }
 
-      const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
+      const pendingInterruptTurnId = this.getThreadState(threadId)?.pendingInterruptTurnId;
       if (pendingInterruptTurnId && (!turnId || pendingInterruptTurnId === turnId)) {
-        this.pendingInterruptByThreadId.delete(threadId);
+        this.setThreadPendingInterruptTurnId(threadId, undefined);
 
         const roomId = this.getRoomIdByThreadId(threadId);
         if (roomId) {
@@ -287,13 +295,13 @@ export class BotController {
         }
       }
 
-      const currentTurnId = this.inFlightTurnByThreadId.get(threadId);
+      const currentTurnId = this.getThreadState(threadId)?.inFlightTurnId;
       if (!currentTurnId) {
         return;
       }
 
       if (!turnId || currentTurnId === turnId) {
-        this.inFlightTurnByThreadId.delete(threadId);
+        this.setThreadInFlightTurnId(threadId, undefined);
       }
 
       this.clearPendingToolActivity(threadId, turnId);
@@ -396,8 +404,8 @@ export class BotController {
         return;
       }
 
-      if (itemType.toLowerCase() === "contextcompaction" && this.pendingCompactionByThreadId.has(threadId)) {
-        this.pendingCompactionByThreadId.delete(threadId);
+      if (itemType.toLowerCase() === "contextcompaction" && this.getThreadState(threadId)?.pendingCompaction) {
+        this.setThreadPendingCompaction(threadId, false);
         const roomIdForCompaction = this.getRoomIdByThreadId(threadId);
         if (roomIdForCompaction) {
           await this.channel.sendCompactionCompleted(roomIdForCompaction, threadId, turnId);
@@ -480,7 +488,7 @@ export class BotController {
       return;
     }
 
-    const inFlightTurnId = this.inFlightTurnByThreadId.get(threadId);
+    const inFlightTurnId = this.getThreadState(threadId)?.inFlightTurnId;
     if (inFlightTurnId) {
       try {
         await this.codexAppServer.turnSteer({
@@ -496,7 +504,7 @@ export class BotController {
         return;
       } catch (error) {
         this.logWarn(`Failed to steer active turn ${inFlightTurnId} for thread ${threadId}: ${String(error)}`);
-        this.inFlightTurnByThreadId.delete(threadId);
+        this.setThreadInFlightTurnId(threadId, undefined);
       }
     }
 
@@ -511,12 +519,12 @@ export class BotController {
         ]
       };
 
-      const reasoningEffort = this.reasoningEffortByThreadId.get(threadId);
+      const reasoningEffort = this.getThreadState(threadId)?.reasoningEffort;
       if (reasoningEffort) {
         turnStartParams["effort"] = reasoningEffort;
       }
 
-      const modelOverride = this.modelOverrideByThreadId.get(threadId);
+      const modelOverride = this.getThreadState(threadId)?.modelOverride;
       if (modelOverride) {
         turnStartParams["model"] = modelOverride;
       }
@@ -525,7 +533,7 @@ export class BotController {
 
       const turnId = readStringFromAny(asRecord(asRecord(result)?.["turn"])?.["id"]);
       if (turnId) {
-        this.inFlightTurnByThreadId.set(threadId, turnId);
+        this.setThreadInFlightTurnId(threadId, turnId);
       }
     } catch (error) {
       this.logWarn(`Failed to send message to Codex thread ${threadId}: ${String(error)}`);
@@ -852,14 +860,14 @@ export class BotController {
           : "-";
         const modelProvider = threadRecord.modelProvider;
         const selectedModel =
-          this.modelOverrideByThreadId.get(threadId)
+          this.getThreadState(threadId)?.modelOverride
           ?? "default";
         const statusType = threadRecord.status.type;
         const agentNickname = threadRecord.agentNickname ?? "-";
         const agentRole = threadRecord.agentRole ?? "-";
-        const defaultEffort = this.reasoningEffortByThreadId.get(threadId) ?? "default";
+        const defaultEffort = this.getThreadState(threadId)?.reasoningEffort ?? "default";
 
-        const tokenUsage = this.tokenUsageByThreadId.get(threadId);
+        const tokenUsage = this.getThreadState(threadId)?.tokenUsage;
         const inputTokens = tokenUsage?.inputTokens;
         const outputTokens = tokenUsage?.outputTokens;
         const totalTokens = tokenUsage?.totalTokens;
@@ -933,18 +941,18 @@ export class BotController {
       return;
     }
 
-    if (this.pendingCompactionByThreadId.has(threadId)) {
+    if (this.getThreadState(threadId)?.pendingCompaction) {
       await this.channel.sendSystemMessage(roomId, `Compaction is already in progress for ${threadId}.`);
       return;
     }
 
-    this.pendingCompactionByThreadId.add(threadId);
+    this.setThreadPendingCompaction(threadId, true);
 
     try {
       await this.codexAppServer.threadCompactStart({ threadId });
       await this.channel.sendSystemMessage(roomId, `Started compaction for ${threadId}.`);
     } catch (error) {
-      this.pendingCompactionByThreadId.delete(threadId);
+      this.setThreadPendingCompaction(threadId, false);
       await this.channel.sendSystemMessage(roomId, `Failed to compact thread ${threadId}: ${String(error)}`);
       this.logWarn(`Failed to compact thread ${threadId}: ${String(error)}`);
     }
@@ -1004,25 +1012,25 @@ export class BotController {
       return;
     }
 
-    const turnId = this.inFlightTurnByThreadId.get(threadId);
+    const turnId = this.getThreadState(threadId)?.inFlightTurnId;
     if (!turnId) {
       await this.channel.sendSystemMessage(roomId, `No in-flight turn found for thread ${threadId}.`);
       return;
     }
 
-    const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
+    const pendingInterruptTurnId = this.getThreadState(threadId)?.pendingInterruptTurnId;
     if (pendingInterruptTurnId && pendingInterruptTurnId === turnId) {
       await this.channel.sendSystemMessage(roomId, `Interrupt is already in progress for turn ${turnId}.`);
       return;
     }
 
-    this.pendingInterruptByThreadId.set(threadId, turnId);
+    this.setThreadPendingInterruptTurnId(threadId, turnId);
 
     try {
       await this.codexAppServer.turnInterrupt({ threadId, turnId });
       await this.channel.sendSystemMessage(roomId, `Interrupt requested for turn ${turnId}. You'll be notified when it completes.`);
     } catch (error) {
-      this.pendingInterruptByThreadId.delete(threadId);
+      this.setThreadPendingInterruptTurnId(threadId, undefined);
       await this.channel.sendSystemMessage(roomId, `Failed to interrupt turn ${turnId}: ${String(error)}`);
       this.logWarn(`Failed to interrupt turn ${turnId} on thread ${threadId}: ${String(error)}`);
     }
@@ -1102,7 +1110,7 @@ export class BotController {
     }
 
     if (modelId.toLowerCase() === "default") {
-      this.modelOverrideByThreadId.delete(threadId);
+      this.setThreadModelOverride(threadId, undefined);
       await this.channel.sendSystemMessage(
         roomId,
         `Cleared model override for ${threadId}. Future turn starts will use the runtime default model.`
@@ -1110,7 +1118,7 @@ export class BotController {
       return;
     }
 
-    this.modelOverrideByThreadId.set(threadId, modelId);
+    this.setThreadModelOverride(threadId, modelId);
     await this.channel.sendSystemMessage(
       roomId,
       `Set model override for ${threadId} to ${modelId}. It will be used on future turn starts.`
@@ -1160,7 +1168,7 @@ export class BotController {
         return;
       }
 
-      const effort = this.reasoningEffortByThreadId.get(mappedThreadId);
+      const effort = this.getThreadState(mappedThreadId)?.reasoningEffort;
       const effectiveEffort = effort ?? "default";
       await this.channel.sendSystemMessage(
         roomId,
@@ -1175,7 +1183,7 @@ export class BotController {
 
     if (!isValidEffort && !isDefault && !isOff) {
       const threadId = firstArg;
-      const effort = this.reasoningEffortByThreadId.get(threadId);
+      const effort = this.getThreadState(threadId)?.reasoningEffort;
       const effectiveEffort = effort ?? "default";
       await this.channel.sendSystemMessage(
         roomId,
@@ -1190,12 +1198,12 @@ export class BotController {
     }
 
     if (isDefault || isOff) {
-      this.reasoningEffortByThreadId.delete(threadId);
+      this.setThreadReasoningEffort(threadId, undefined);
       await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} reset to default (in-memory, not persisted).`);
       return;
     }
 
-    this.reasoningEffortByThreadId.set(threadId, firstArgLower);
+    this.setThreadReasoningEffort(threadId, firstArgLower);
     await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
   }
 
@@ -1369,8 +1377,8 @@ export class BotController {
     const lastOutputTokens = typeof lastRecord?.["outputTokens"] === "number" ? Math.trunc(lastRecord["outputTokens"]) : undefined;
     const lastTotalTokens = typeof lastRecord?.["totalTokens"] === "number" ? Math.trunc(lastRecord["totalTokens"]) : undefined;
 
-    const existingUsage = this.tokenUsageByThreadId.get(threadId) ?? {};
-    this.tokenUsageByThreadId.set(threadId, {
+    const existingUsage = this.getThreadState(threadId)?.tokenUsage ?? {};
+    this.setThreadTokenUsage(threadId, {
       inputTokens: inputTokens ?? existingUsage.inputTokens,
       outputTokens: outputTokens ?? existingUsage.outputTokens,
       totalTokens: totalTokens ?? existingUsage.totalTokens,
@@ -1407,9 +1415,106 @@ export class BotController {
     }
   }
 
+  /** Loads persisted per-thread state into in-memory state. */
+  private loadThreadState(): void {
+    const persistedThreadState = loadPersistedThreadState(
+      this.threadStatePersistencePath,
+      this.logInfo.bind(this),
+      this.logWarn.bind(this)
+    );
+
+    for (const [threadId, state] of persistedThreadState.entries()) {
+      this.threadStateByThreadId.set(threadId, state);
+    }
+  }
+
   /** Persists current room-thread routes to disk. */
   private persistRoomThreadRoutes(): void {
     persistRoomThreadRoutes(this.routingPersistencePath, this.roomThreadRoutes, this.logWarn.bind(this));
+  }
+
+  /** Persists per-thread state to disk. */
+  private persistThreadState(): void {
+    persistThreadStateFile(this.threadStatePersistencePath, this.threadStateByThreadId, this.logWarn.bind(this));
+  }
+
+  /** Reads current thread state (without creating when absent). */
+  private getThreadState(threadId: string): ThreadState | undefined {
+    return this.threadStateByThreadId.get(threadId);
+  }
+
+  /** Ensures a thread state record exists and returns it. */
+  private ensureThreadState(threadId: string): ThreadState {
+    let state = this.threadStateByThreadId.get(threadId);
+    if (state) {
+      return state;
+    }
+
+    state = {};
+    this.threadStateByThreadId.set(threadId, state);
+    return state;
+  }
+
+  /** Drops empty thread-state records and persists when state mutates. */
+  private finalizeThreadStateMutation(threadId: string): void {
+    const state = this.threadStateByThreadId.get(threadId);
+    if (!state) {
+      this.persistThreadState();
+      return;
+    }
+
+    const hasTokenUsage = state.tokenUsage !== undefined
+      && Object.values(state.tokenUsage).some((value) => value !== undefined);
+
+    const isEmpty =
+      state.inFlightTurnId === undefined
+      && state.pendingCompaction !== true
+      && state.pendingInterruptTurnId === undefined
+      && state.reasoningEffort === undefined
+      && state.modelOverride === undefined
+      && !hasTokenUsage;
+
+    if (isEmpty) {
+      this.threadStateByThreadId.delete(threadId);
+    }
+
+    this.persistThreadState();
+  }
+
+  private setThreadInFlightTurnId(threadId: string, turnId: string | undefined): void {
+    const state = this.ensureThreadState(threadId);
+    state.inFlightTurnId = turnId;
+    this.finalizeThreadStateMutation(threadId);
+  }
+
+  private setThreadPendingCompaction(threadId: string, pendingCompaction: boolean): void {
+    const state = this.ensureThreadState(threadId);
+    state.pendingCompaction = pendingCompaction ? true : undefined;
+    this.finalizeThreadStateMutation(threadId);
+  }
+
+  private setThreadPendingInterruptTurnId(threadId: string, turnId: string | undefined): void {
+    const state = this.ensureThreadState(threadId);
+    state.pendingInterruptTurnId = turnId;
+    this.finalizeThreadStateMutation(threadId);
+  }
+
+  private setThreadReasoningEffort(threadId: string, reasoningEffort: ReasoningEffort | undefined): void {
+    const state = this.ensureThreadState(threadId);
+    state.reasoningEffort = reasoningEffort;
+    this.finalizeThreadStateMutation(threadId);
+  }
+
+  private setThreadModelOverride(threadId: string, modelOverride: string | undefined): void {
+    const state = this.ensureThreadState(threadId);
+    state.modelOverride = modelOverride;
+    this.finalizeThreadStateMutation(threadId);
+  }
+
+  private setThreadTokenUsage(threadId: string, tokenUsage: ThreadTokenUsage): void {
+    const state = this.ensureThreadState(threadId);
+    state.tokenUsage = tokenUsage;
+    this.finalizeThreadStateMutation(threadId);
   }
 
   /** Writes info-level controller logs. */

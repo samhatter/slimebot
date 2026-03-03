@@ -63,6 +63,7 @@ If edits touch runtime flow significantly, also run:
 ## Config & Persistence Notes
 
 - Default route persistence path is configured via `controller.routingPersistencePath`.
+- Default thread state persistence path is configured via `controller.threadStatePersistencePath`.
 - `controller.commandPrefix` is parsed in config, but Matrix command parsing currently accepts canonical commands with or without `!`.
 - Example state file: `slimebot-routing.json`.
 - Main app config files in repo root:
