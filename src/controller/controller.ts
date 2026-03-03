@@ -244,6 +244,11 @@ export class BotController {
       }
 
       this.inFlightTurnByThreadId.set(threadId, turnId);
+
+      const roomId = this.getRoomIdByThreadId(threadId);
+      if (roomId) {
+        void this.channel.indicateTurnStarted(roomId);
+      }
     });
 
     this.codexAppServer.on("notification:turn/completed", async (params: unknown) => {
@@ -260,6 +265,11 @@ export class BotController {
 
       if (!threadId) {
         return;
+      }
+
+      const roomId = this.getRoomIdByThreadId(threadId);
+      if (roomId) {
+        void this.channel.indicateTurnEnded(roomId);
       }
 
       const pendingInterruptTurnId = this.pendingInterruptByThreadId.get(threadId);
@@ -712,7 +722,7 @@ export class BotController {
       "- !models: List available models",
       "- !model <modelId> [threadId]: Set selected model for subsequent turns (!m)",
       "- !account [ratelimits]: Show account information or latest rate limits",
-      "- !reasoning [off|low|medium|high] [threadId]: Show or set reasoning per thread (!r)",
+      "- !reasoning [default|low|medium|high] [threadId]: Show or set reasoning per thread (!r)",
       "- !verbosity [on|off]: Show or set tool activity message verbosity (!v)"
     ];
 
@@ -1139,7 +1149,7 @@ export class BotController {
 
   /** Shows or updates per-thread reasoning effort settings. */
   private async handleReasoningCommand(roomId: string, command: ControllerCommand): Promise<void> {
-    const usage = "!reasoning [off|low|medium|high] [threadId]";
+    const usage = "!reasoning [default|low|medium|high] [threadId]";
     const firstArg = command.args[0]?.trim();
     const firstArgLower = firstArg?.toLowerCase();
 
@@ -1160,9 +1170,10 @@ export class BotController {
     }
 
     const isValidEffort = firstArgLower === "low" || firstArgLower === "medium" || firstArgLower === "high";
+    const isDefault = firstArgLower === "default";
     const isOff = firstArgLower === "off";
 
-    if (!isValidEffort && !isOff) {
+    if (!isValidEffort && !isDefault && !isOff) {
       const threadId = firstArg;
       const effort = this.reasoningEffortByThreadId.get(threadId);
       const effectiveEffort = effort ?? "default";
@@ -1178,7 +1189,7 @@ export class BotController {
       return;
     }
 
-    if (isOff) {
+    if (isDefault || isOff) {
       this.reasoningEffortByThreadId.delete(threadId);
       await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} reset to default (in-memory, not persisted).`);
       return;

@@ -27,6 +27,7 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
 - Model and reasoning controls per thread (`!model` / `!m`, `!reasoning` / `!r`).
 - Account APIs (`!account`, `!account ratelimits`) + ChatGPT login flow (`!login`, `!callback`).
 - Tool activity notifications in-room (`item/started`, `item/completed`).
+- Matrix typing indicator during active turns with periodic heartbeat refresh.
 
 ## Requirements
 
@@ -92,7 +93,7 @@ General:
 - `!model <modelId> [threadId]` — set selected model for subsequent turns (defaults to mapped thread)
 - `!account` — read account/auth information
 - `!account ratelimits` — show latest received `account/rateLimits/updated` payload
-- `!reasoning [off|low|medium|high] [threadId]` — show or set per-thread reasoning effort
+- `!reasoning [default|low|medium|high] [threadId]` — show or set per-thread reasoning effort
 - `!verbosity [on|off]` — show or set tool activity message verbosity (approvals unaffected)
 
 Thread operations:
@@ -117,7 +118,7 @@ Approvals:
 Model & reasoning aliases:
 
 - `!m <modelId> [threadId]` — alias for `!model`
-- `!r [off|low|medium|high] [threadId]` — alias for `!reasoning`
+- `!r [default|low|medium|high] [threadId]` — alias for `!reasoning`
 - `!v [on|off]` — alias for `!verbosity`
 
 Auth:

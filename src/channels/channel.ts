@@ -133,6 +133,12 @@ export abstract class Channel extends EventEmitter {
   /** Sends a compaction completion notification. */
   public abstract sendCompactionCompleted(roomId: string, threadId: string, turnId?: string): Promise<void>;
 
+  /** Indicates a turn has started processing for the room. */
+  public abstract indicateTurnStarted(roomId: string): Promise<void>;
+
+  /** Indicates a turn has finished processing for the room. */
+  public abstract indicateTurnEnded(roomId: string): Promise<void>;
+
   /** Registers a message handler for inbound room messages. */
   public onMessage(listener: (event: ChannelMessage) => void | Promise<void>): this {
     super.on("message", listener as (...args: unknown[]) => void);

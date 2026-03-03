@@ -33,6 +33,10 @@ export class MatrixChannel extends Channel {
   private readonly matrixClient: MatrixClient;
   private readonly processStartMs = Date.now();
   private static readonly maxRateLimitRetries = 8;
+  private static readonly typingTimeoutMs = 30_000;
+  private static readonly typingHeartbeatMs = 20_000;
+  private readonly activeTurnCountByRoomId = new Map<string, number>();
+  private readonly typingHeartbeatByRoomId = new Map<string, NodeJS.Timeout>();
 
   public constructor(private readonly config: MatrixConfig) {
     super();
@@ -98,6 +102,59 @@ export class MatrixChannel extends Channel {
   public async sendCompactionCompleted(roomId: string, threadId: string, turnId?: string): Promise<void> {
     const formattedCompaction = formatCompactionCompleted(threadId, turnId);
     await this.sendHtmlText(roomId, formattedCompaction.body, formattedCompaction.formattedBody);
+  }
+
+  public async indicateTurnStarted(roomId: string): Promise<void> {
+    const currentCount = this.activeTurnCountByRoomId.get(roomId) ?? 0;
+    const nextCount = currentCount + 1;
+    this.activeTurnCountByRoomId.set(roomId, nextCount);
+
+    if (currentCount > 0) {
+      return;
+    }
+
+    try {
+      await this.matrixClient.setTyping(roomId, true, MatrixChannel.typingTimeoutMs);
+    } catch (error) {
+      LogService.warn("matrix-runner", `Failed to set typing=true room=${roomId}: ${String(error)}`);
+    }
+
+    const heartbeat = setInterval(() => {
+      void this.matrixClient
+        .setTyping(roomId, true, MatrixChannel.typingTimeoutMs)
+        .catch((error: unknown) => {
+          LogService.warn("matrix-runner", `Failed typing heartbeat room=${roomId}: ${String(error)}`);
+        });
+    }, MatrixChannel.typingHeartbeatMs);
+
+    this.typingHeartbeatByRoomId.set(roomId, heartbeat);
+  }
+
+  public async indicateTurnEnded(roomId: string): Promise<void> {
+    const currentCount = this.activeTurnCountByRoomId.get(roomId) ?? 0;
+    if (currentCount <= 0) {
+      return;
+    }
+
+    const nextCount = currentCount - 1;
+    if (nextCount > 0) {
+      this.activeTurnCountByRoomId.set(roomId, nextCount);
+      return;
+    }
+
+    this.activeTurnCountByRoomId.delete(roomId);
+
+    const heartbeat = this.typingHeartbeatByRoomId.get(roomId);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      this.typingHeartbeatByRoomId.delete(roomId);
+    }
+
+    try {
+      await this.matrixClient.setTyping(roomId, false);
+    } catch (error) {
+      LogService.warn("matrix-runner", `Failed to set typing=false room=${roomId}: ${String(error)}`);
+    }
   }
 
   /** Sends an unformatted Matrix text message. */
