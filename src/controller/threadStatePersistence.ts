@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { asRecord } from "./commands.js";
 
-type PersistedThreadState = {
+export type PersistedThreadState = {
   inFlightTurnId?: string;
   pendingCompaction?: boolean;
   pendingInterruptTurnId?: string;
@@ -22,26 +22,37 @@ type PersistedThreadState = {
   };
 };
 
+export type PersistedThreadStatePayload = {
+  threadStateByThreadId: Map<string, PersistedThreadState>;
+  toolActivityMessagesEnabled?: boolean;
+};
+
 /** Loads persisted thread state from disk, returning an empty map on failure. */
 export function loadPersistedThreadState(
   threadStatePersistencePath: string,
   logInfo: (message: string) => void,
   logWarn: (message: string) => void
-): Map<string, PersistedThreadState> {
+): PersistedThreadStatePayload {
   try {
     const rawState = readFileSync(threadStatePersistencePath, "utf8");
     if (!rawState.trim()) {
-      return new Map<string, PersistedThreadState>();
+      return { threadStateByThreadId: new Map<string, PersistedThreadState>() };
     }
 
     const parsedState = JSON.parse(rawState) as unknown;
     const stateRecord = asRecord(parsedState);
     const threads = asRecord(stateRecord?.["threads"]);
-    if (!threads) {
-      return new Map<string, PersistedThreadState>();
-    }
-
     const threadState = new Map<string, PersistedThreadState>();
+    const toolActivityMessagesEnabled = typeof stateRecord?.["toolActivityMessagesEnabled"] === "boolean"
+      ? stateRecord["toolActivityMessagesEnabled"]
+      : undefined;
+
+    if (!threads) {
+      return {
+        threadStateByThreadId: threadState,
+        toolActivityMessagesEnabled
+      };
+    }
 
     for (const [threadId, rawThreadState] of Object.entries(threads)) {
       if (!threadId) {
@@ -83,7 +94,10 @@ export function loadPersistedThreadState(
     }
 
     logInfo(`Loaded ${String(threadState.size)} persisted thread state record(s)`);
-    return threadState;
+    return {
+      threadStateByThreadId: threadState,
+      toolActivityMessagesEnabled
+    };
   } catch (error) {
     const isMissingFileError =
       typeof error === "object" &&
@@ -92,24 +106,28 @@ export function loadPersistedThreadState(
       (error as { code?: string }).code === "ENOENT";
 
     if (isMissingFileError) {
-      return new Map<string, PersistedThreadState>();
+      return { threadStateByThreadId: new Map<string, PersistedThreadState>() };
     }
 
     logWarn(`Failed to load thread state from ${threadStatePersistencePath}: ${String(error)}`);
-    return new Map<string, PersistedThreadState>();
+    return { threadStateByThreadId: new Map<string, PersistedThreadState>() };
   }
 }
 
 /** Persists per-thread state to disk as a JSON state file. */
 export function persistThreadState(
   threadStatePersistencePath: string,
-  threadState: ReadonlyMap<string, PersistedThreadState>,
+  payload: {
+    threadStateByThreadId: ReadonlyMap<string, PersistedThreadState>;
+    toolActivityMessagesEnabled: boolean;
+  },
   logWarn: (message: string) => void
 ): void {
   try {
     mkdirSync(dirname(threadStatePersistencePath), { recursive: true });
     const serializableState = {
-      threads: Object.fromEntries(threadState.entries())
+      toolActivityMessagesEnabled: payload.toolActivityMessagesEnabled,
+      threads: Object.fromEntries(payload.threadStateByThreadId.entries())
     };
     writeFileSync(threadStatePersistencePath, `${JSON.stringify(serializableState, null, 2)}\n`, "utf8");
   } catch (error) {

@@ -95,7 +95,7 @@ General:
 - `!account` — read account/auth information
 - `!account ratelimits` — show latest received `account/rateLimits/updated` payload
 - `!reasoning [default|low|medium|high] [threadId]` — show or set per-thread reasoning effort
-- `!verbosity [on|off]` — show or set tool activity message verbosity (approvals unaffected)
+- `!verbosity [on|off]` — show or set global tool activity message verbosity (approvals unaffected)
 
 Thread operations:
 
@@ -134,7 +134,7 @@ Auth:
 - Active turn state is tracked from `turn/started` and `turn/completed` notifications.
 - Pending approval state is tracked per room and cleared when resolved.
 - Per-thread controller state (reasoning/model overrides, token usage, and active-turn metadata) is persisted to `controller.threadStatePersistencePath`.
-- Verbosity toggle is in-memory for the running bot process (not persisted to disk).
+- Verbosity setting is persisted in `controller.threadStatePersistencePath`.
 
 ## Build & Check
 

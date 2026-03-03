@@ -1199,12 +1199,12 @@ export class BotController {
 
     if (isDefault || isOff) {
       this.setThreadReasoningEffort(threadId, undefined);
-      await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} reset to default (in-memory, not persisted).`);
+      await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} reset to default.`);
       return;
     }
 
     this.setThreadReasoningEffort(threadId, firstArgLower);
-    await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower} (in-memory, not persisted).`);
+    await this.channel.sendSystemMessage(roomId, `Reasoning for ${threadId} set to ${firstArgLower}.`);
   }
 
   /** Shows or updates tool-activity message verbosity for this bot instance. */
@@ -1226,9 +1226,10 @@ export class BotController {
     }
 
     this.toolActivityMessagesEnabled = firstArg === "on";
+    this.persistThreadState();
     await this.channel.sendSystemMessage(
       roomId,
-      this.toolActivityMessagesEnabled
+      firstArg === "on"
         ? "Tool activity messages enabled. Approval requests are always shown."
         : "Tool activity messages disabled. Approval requests are always shown."
     );
@@ -1423,7 +1424,11 @@ export class BotController {
       this.logWarn.bind(this)
     );
 
-    for (const [threadId, state] of persistedThreadState.entries()) {
+    if (typeof persistedThreadState.toolActivityMessagesEnabled === "boolean") {
+      this.toolActivityMessagesEnabled = persistedThreadState.toolActivityMessagesEnabled;
+    }
+
+    for (const [threadId, state] of persistedThreadState.threadStateByThreadId.entries()) {
       this.threadStateByThreadId.set(threadId, state);
     }
   }
@@ -1435,7 +1440,14 @@ export class BotController {
 
   /** Persists per-thread state to disk. */
   private persistThreadState(): void {
-    persistThreadStateFile(this.threadStatePersistencePath, this.threadStateByThreadId, this.logWarn.bind(this));
+    persistThreadStateFile(
+      this.threadStatePersistencePath,
+      {
+        threadStateByThreadId: this.threadStateByThreadId,
+        toolActivityMessagesEnabled: this.toolActivityMessagesEnabled
+      },
+      this.logWarn.bind(this)
+    );
   }
 
   /** Reads current thread state (without creating when absent). */
