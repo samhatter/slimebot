@@ -25,12 +25,20 @@ export function parseMatrixCommand(body: string): ControllerCommand | undefined 
     return undefined;
   }
 
+  if (!trimmed.startsWith("!")) {
+    return undefined;
+  }
+
   const tokens = trimmed.split(/\s+/u).filter(Boolean);
   if (tokens.length === 0) {
     return undefined;
   }
 
-  const firstToken = tokens[0].startsWith("!") ? tokens[0].slice(1) : tokens[0];
+  const firstToken = tokens[0].slice(1);
+  if (!firstToken) {
+    return undefined;
+  }
+
   const normalizedToken = firstToken.toLowerCase();
   const commandName = matrixCommandAliases[normalizedToken] ?? normalizedToken;
   if (!isControllerCommandName(commandName)) {
