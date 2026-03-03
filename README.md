@@ -14,7 +14,7 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
   - auto-join invite handling (optionally restricted by `allowedInviteSender`)
   - rate-limit aware send retries (`M_LIMIT_EXCEEDED`)
   - command parsing with canonical names + aliases
-- Per-room thread route persistence to `slimebot-routing.json`.
+- SQLite-backed state persistence (room routes + per-thread state).
 - Startup restore flow that resumes persisted thread mappings when possible.
 - Turn handling:
   - `turn/steer` when a room sends a new message during an in-flight turn
@@ -54,6 +54,7 @@ Or with Docker Compose:
 - `docker compose up --build`
 
 Compose persists runtime logs to `./logs/slimebot.log` (also still visible in `docker compose logs`).
+Compose also persists SQLite bot state under `./state/slimebot-state.sqlite3`.
 
 ## Configuration
 
@@ -72,8 +73,7 @@ Key sections:
   - optional allowed invite sender
 - `controller`
   - `commandPrefix` (currently parsed but not enforced by Matrix command parsing)
-  - `routingPersistencePath`
-  - `threadStatePersistencePath`
+  - `stateDatabasePath`
 - `codex`
   - command and args used to launch app-server
 
@@ -134,8 +134,7 @@ Auth:
 - If steering fails (stale turn state), Slimebot falls back to `turn/start`.
 - Active turn state is tracked from `turn/started` and `turn/completed` notifications.
 - Pending approval state is tracked per room and cleared when resolved.
-- Per-thread controller state (reasoning/model overrides, token usage, and active-turn metadata) is persisted to `controller.threadStatePersistencePath`.
-- Verbosity setting is persisted in `controller.threadStatePersistencePath`.
+- Room-thread routes and per-thread controller state (reasoning/model overrides, token usage, active-turn metadata, verbosity) are persisted in `controller.stateDatabasePath`.
 
 ## Build & Check
 

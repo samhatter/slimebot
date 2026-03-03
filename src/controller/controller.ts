@@ -36,8 +36,7 @@ import {
   shouldIgnoreCodexLogLine,
   stringifyJson
 } from "./controllerUtils.js";
-import { loadPersistedRoomThreadRoutes, persistRoomThreadRoutes } from "./routingPersistence.js";
-import { loadPersistedThreadState, persistThreadState as persistThreadStateFile } from "./threadStatePersistence.js";
+import { StateDatabase } from "./stateDatabase.js";
 
 type PendingApprovalRequest = {
   requestId: number | string;
@@ -78,8 +77,7 @@ type ThreadState = {
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
-  private readonly routingPersistencePath: string;
-  private readonly threadStatePersistencePath: string;
+  private readonly stateDatabase: StateDatabase;
   private readonly roomThreadRoutes = new Map<string, string>();
   private readonly threadStateByThreadId = new Map<string, ThreadState>();
   private readonly pendingToolActivityByKey = new Map<string, PendingToolActivity>();
@@ -95,10 +93,12 @@ export class BotController {
    */
   public constructor(appConfig: AppConfig) {
     this.channel = createChannel(appConfig.channel);
-    this.routingPersistencePath = resolve(appConfig.controller.routingPersistencePath);
-    this.threadStatePersistencePath = resolve(appConfig.controller.threadStatePersistencePath);
-    this.loadRoomThreadRoutes();
-    this.loadThreadState();
+    this.stateDatabase = new StateDatabase(
+      resolve(appConfig.controller.stateDatabasePath),
+      this.logInfo.bind(this),
+      this.logWarn.bind(this)
+    );
+    this.loadPersistedState();
 
     if (appConfig.codex.command) {
       this.codexAppServer = new CodexAppServerProcess(
@@ -1410,50 +1410,34 @@ export class BotController {
     }
   }
 
-  /** Loads persisted room-thread routes into in-memory state. */
-  private loadRoomThreadRoutes(): void {
-    const persistedRoutes = loadPersistedRoomThreadRoutes(
-      this.routingPersistencePath,
-      this.logInfo.bind(this),
-      this.logWarn.bind(this)
-    );
-    for (const [roomId, threadId] of persistedRoutes.entries()) {
+  /** Loads persisted state into in-memory maps. */
+  private loadPersistedState(): void {
+    const persistedState = this.stateDatabase.loadState();
+
+    if (typeof persistedState.toolActivityMessagesEnabled === "boolean") {
+      this.toolActivityMessagesEnabled = persistedState.toolActivityMessagesEnabled;
+    }
+
+    for (const [roomId, threadId] of persistedState.roomThreadRoutes.entries()) {
       this.roomThreadRoutes.set(roomId, threadId);
     }
-  }
 
-  /** Loads persisted per-thread state into in-memory state. */
-  private loadThreadState(): void {
-    const persistedThreadState = loadPersistedThreadState(
-      this.threadStatePersistencePath,
-      this.logInfo.bind(this),
-      this.logWarn.bind(this)
-    );
-
-    if (typeof persistedThreadState.toolActivityMessagesEnabled === "boolean") {
-      this.toolActivityMessagesEnabled = persistedThreadState.toolActivityMessagesEnabled;
-    }
-
-    for (const [threadId, state] of persistedThreadState.threadStateByThreadId.entries()) {
+    for (const [threadId, state] of persistedState.threadStateByThreadId.entries()) {
       this.threadStateByThreadId.set(threadId, state);
     }
   }
 
-  /** Persists current room-thread routes to disk. */
+  /** Persists current room-thread routes to SQLite. */
   private persistRoomThreadRoutes(): void {
-    persistRoomThreadRoutes(this.routingPersistencePath, this.roomThreadRoutes, this.logWarn.bind(this));
+    this.stateDatabase.persistRoomThreadRoutes(this.roomThreadRoutes);
   }
 
-  /** Persists per-thread state to disk. */
+  /** Persists per-thread state to SQLite. */
   private persistThreadState(): void {
-    persistThreadStateFile(
-      this.threadStatePersistencePath,
-      {
-        threadStateByThreadId: this.threadStateByThreadId,
-        toolActivityMessagesEnabled: this.toolActivityMessagesEnabled
-      },
-      this.logWarn.bind(this)
-    );
+    this.stateDatabase.persistThreadState({
+      threadStateByThreadId: this.threadStateByThreadId,
+      toolActivityMessagesEnabled: this.toolActivityMessagesEnabled
+    });
   }
 
   /** Reads current thread state (without creating when absent). */

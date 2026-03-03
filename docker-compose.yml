@@ -18,7 +18,7 @@ services:
       - ./codex-config.toml:/var/lib/slimebot/codex/.codex/config.toml:ro
       - ./logs:/var/lib/slimebot/logs
       - ./slimebot.yaml:/app/slimebot.yaml:ro
-      - ./slimebot-routing.json:/app/slimebot-routing.json:rw
+      - ./state:/app/state
     command: >
       sh -lc "mkdir -p /var/lib/slimebot/logs &&
       node dist/index.js 2>&1 | tee -a /var/lib/slimebot/logs/slimebot.log"
