@@ -2,6 +2,8 @@
  * @fileoverview Matrix channel implementation for Slimebot.
  */
 
+import { access, mkdir, writeFile } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
 import { LogService, MatrixClient } from "matrix-bot-sdk";
 import type { MatrixConfig } from "./config.js";
 import {
@@ -232,13 +234,25 @@ export class MatrixChannel extends Channel {
         return;
       }
 
-      const content = rawEvent["content"] as { body?: string; msgtype?: string } | undefined;
-      if (!content || content.msgtype !== "m.text") {
+      const content = rawEvent["content"] as
+        | {
+            body?: string;
+            msgtype?: string;
+            url?: string;
+            file?: { url?: string };
+            info?: { mimetype?: string };
+          }
+        | undefined;
+      if (!content) {
         return;
       }
 
-      const body = content.body ?? "";
-      const command = parseMatrixCommand(body);
+      const body = await this.buildInboundBody(content);
+      if (!body) {
+        return;
+      }
+
+      const command = content.msgtype === "m.text" ? parseMatrixCommand(body) : undefined;
       LogService.info("matrix-runner", `[room.message] room=${roomId} sender=${sender} body=${body}`);
       this.emitMessage(new ChannelMessage({
         roomId,
@@ -248,6 +262,217 @@ export class MatrixChannel extends Channel {
         command
       }));
     });
+  }
+
+  /**
+   * Builds the inbound text payload forwarded to the controller.
+   *
+   * For attachment-capable events, this downloads media and appends an
+   * `Attachment saved to:` line with the local file path so Codex can access it.
+   */
+  private async buildInboundBody(content: {
+    body?: string;
+    msgtype?: string;
+    url?: string;
+    file?: { url?: string };
+    info?: { mimetype?: string };
+  }): Promise<string> {
+    const textBody = content.body?.trim() ?? "";
+    const savedAttachmentPath = await this.downloadAttachment(content);
+    if (!savedAttachmentPath) {
+      return textBody;
+    }
+
+    const attachmentLine = `Attachment saved to: ${savedAttachmentPath}`;
+    if (!textBody) {
+      return attachmentLine;
+    }
+
+    return `${textBody}\n\n${attachmentLine}`;
+  }
+
+  /**
+   * Extracts a Matrix media URL from unencrypted (`content.url`) or encrypted
+   * (`content.file.url`) message content.
+   */
+  private extractAttachmentUrl(content: {
+    url?: string;
+    file?: { url?: string };
+  }): string | undefined {
+    if (typeof content.url === "string" && content.url.trim()) {
+      return content.url.trim();
+    }
+
+    if (typeof content.file?.url === "string" && content.file.url.trim()) {
+      return content.file.url.trim();
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Downloads a Matrix attachment to the local attachments directory and returns
+   * the absolute file path for forwarding to Codex.
+   */
+  private async downloadAttachment(content: {
+    body?: string;
+    url?: string;
+    file?: { url?: string };
+    info?: { mimetype?: string };
+  }): Promise<string | undefined> {
+    const attachmentUrl = this.extractAttachmentUrl(content);
+    if (!attachmentUrl) {
+      return undefined;
+    }
+
+    try {
+      let data: Buffer;
+      let contentTypeFromDownload: string | null = null;
+
+      if (attachmentUrl.startsWith("mxc://")) {
+        const downloadResult = await this.matrixClient.downloadContent(attachmentUrl);
+        data = downloadResult.data;
+        contentTypeFromDownload = downloadResult.contentType;
+      } else {
+        const downloadUrl = this.toDownloadUrl(attachmentUrl);
+        if (!downloadUrl) {
+          LogService.warn("matrix-runner", `Unsupported attachment URL, skipping download: ${attachmentUrl}`);
+          return undefined;
+        }
+
+        const response = await fetch(downloadUrl, {
+          headers: {
+            Authorization: `Bearer ${this.config.accessToken}`
+          }
+        });
+
+        if (!response.ok) {
+          LogService.warn(
+            "matrix-runner",
+            `Failed to download attachment (status=${String(response.status)}): ${downloadUrl}`
+          );
+          return undefined;
+        }
+
+        data = Buffer.from(await response.arrayBuffer());
+        contentTypeFromDownload = response.headers.get("content-type");
+      }
+
+      const attachmentsDirectory = await this.getAttachmentsDirectory();
+      const fileName = this.buildAttachmentFileName(
+        content.body,
+        content.info?.mimetype,
+        contentTypeFromDownload
+      );
+      const absolutePath = join(attachmentsDirectory, fileName);
+      await writeFile(absolutePath, data);
+      return absolutePath;
+    } catch (error) {
+      LogService.warn("matrix-runner", `Attachment download failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Converts Matrix media references into HTTP(S) download URLs.
+   */
+  private toDownloadUrl(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+
+    const mxcMatch = /^mxc:\/\/([^/]+)\/(.+)$/.exec(trimmed);
+    if (!mxcMatch) {
+      return undefined;
+    }
+
+    const serverName = encodeURIComponent(mxcMatch[1]);
+    const mediaId = mxcMatch[2]
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+
+    return `${this.config.homeserverUrl}/_matrix/media/v3/download/${serverName}/${mediaId}`;
+  }
+
+  /**
+   * Resolves the attachments directory, preferring the Docker workspace mount.
+   */
+  private async getAttachmentsDirectory(): Promise<string> {
+    const dockerWorkspacePath = "/var/lib/slimebot/workspace";
+    const fallbackWorkspacePath = resolve(process.cwd(), "workspace");
+    const workspacePath = (await this.pathExists(dockerWorkspacePath)) ? dockerWorkspacePath : fallbackWorkspacePath;
+    const attachmentsPath = join(workspacePath, "attachments");
+    await mkdir(attachmentsPath, { recursive: true });
+    return attachmentsPath;
+  }
+
+  /**
+   * Checks whether a filesystem path exists.
+   */
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Builds a stable attachment file name using message metadata and MIME type.
+   */
+  private buildAttachmentFileName(
+    body: string | undefined,
+    declaredMimeType: string | undefined,
+    responseMimeType: string | null
+  ): string {
+    const requestedName = (body ?? "").trim();
+    const safeBase = requestedName
+      .replaceAll(/[^a-zA-Z0-9._-]/g, "_")
+      .replaceAll(/^_+|_+$/g, "")
+      .slice(0, 80);
+
+    const extension = this.guessFileExtension(requestedName, declaredMimeType ?? responseMimeType ?? undefined);
+    const timestamp = Date.now();
+    const randomSuffix = Math.random().toString(36).slice(2, 8);
+    const baseName = safeBase || "attachment";
+    return `${timestamp}-${randomSuffix}-${baseName}${extension}`;
+  }
+
+  /**
+   * Chooses a file extension from filename or MIME type hints.
+   */
+  private guessFileExtension(fileName: string, mimeType?: string): string {
+    const existingExtension = extname(fileName);
+    if (existingExtension) {
+      return existingExtension;
+    }
+
+    const normalizedMime = (mimeType ?? "").split(";")[0].trim().toLowerCase();
+    switch (normalizedMime) {
+      case "image/jpeg":
+        return ".jpg";
+      case "image/png":
+        return ".png";
+      case "image/gif":
+        return ".gif";
+      case "image/webp":
+        return ".webp";
+      case "application/pdf":
+        return ".pdf";
+      case "text/plain":
+        return ".txt";
+      case "application/json":
+        return ".json";
+      default:
+        return "";
+    }
   }
 
   /** Sends a Matrix message payload with msgtype and optional rich formatting. */
