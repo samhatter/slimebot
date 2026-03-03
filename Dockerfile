@@ -15,7 +15,7 @@ FROM node:22-bookworm AS runner
 ARG GOPLACES_VERSION=0.3.0
 ARG TARGETARCH
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates curl ripgrep tar \
+	&& apt-get install -y --no-install-recommends ca-certificates curl gh ripgrep tar \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /var/lib/slimebot/workspace /var/lib/slimebot/codex /var/lib/slimebot/logs
 
