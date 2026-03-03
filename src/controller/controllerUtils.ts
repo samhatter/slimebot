@@ -57,7 +57,9 @@ function sanitizeToolPayloadValue(value: unknown): unknown {
     "threadId",
     "turnId",
     "commandActions",
-    "actions"
+    "actions",
+    "exitCode",
+    "processId",
   ]);
 
   const sanitizedRecord: Record<string, unknown> = {};

@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
 
 /** Process launch options for the Codex app-server child process. */
-type CodexAppServerProcessOptions = {
+export type CodexAppServerProcessOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
 };

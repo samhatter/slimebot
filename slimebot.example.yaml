@@ -11,7 +11,8 @@ controller:
   routingPersistencePath: "/app/slimebot-routing.json"
 
 codex:
-  command: "./node_modules/.bin/codex"
+  command: "/app/node_modules/.bin/codex"
+  cwd: "/var/lib/slimebot/workspace"
   args:
     - app-server
     - --listen

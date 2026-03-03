@@ -11,7 +11,7 @@ COPY tsconfig.json ./tsconfig.json
 COPY src ./src
 RUN npm run build
 
-FROM node:22-bookworm-slim AS runner
+FROM node:22-bookworm AS runner
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates \
 	&& rm -rf /var/lib/apt/lists/* \

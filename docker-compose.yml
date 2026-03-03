@@ -12,6 +12,8 @@ services:
       SLIMEBOT_CONFIG_PATH: /app/slimebot.yaml
     volumes:
       - ./codex:/var/lib/slimebot/codex
+      - ./workspace:/var/lib/slimebot/workspace
+      - ./codex-config.toml:/var/lib/slimebot/codex/.codex/config.toml:ro
       - ./logs:/var/lib/slimebot/logs
       - ./slimebot.yaml:/app/slimebot.yaml:ro
       - ./slimebot-routing.json:/app/slimebot-routing.json:rw

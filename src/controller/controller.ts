@@ -92,7 +92,11 @@ export class BotController {
     this.loadRoomThreadRoutes();
 
     if (appConfig.codex.command) {
-      this.codexAppServer = new CodexAppServerProcess(appConfig.codex.command, appConfig.codex.args);
+      this.codexAppServer = new CodexAppServerProcess(
+        appConfig.codex.command,
+        appConfig.codex.args,
+        appConfig.codex.options
+      );
     }
   }
 
