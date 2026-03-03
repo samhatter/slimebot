@@ -46,7 +46,7 @@ When `src/controller/controller.ts` grows:
 
 - Extract pure utility logic to `src/controller/controllerUtils.ts`.
 - Extract command/response parsing helpers to `src/controller/commands.ts`.
-- Extract persistence/file I/O concerns to `src/controller/routingPersistence.ts`.
+- Extract persistence concerns to `src/controller/stateDatabase.ts`.
 - Keep Matrix-specific rendering in `src/channels/matrix/matrixFormatting.ts`.
 - Keep `BotController` focused on orchestration and event wiring.
 
@@ -64,7 +64,7 @@ If edits touch runtime flow significantly, also run:
 
 - State persistence path is configured via `controller.stateDatabasePath`.
 - `controller.commandPrefix` is parsed in config, but Matrix command parsing currently accepts canonical commands with or without `!`.
-- Example state file: `slimebot-state.sqlite3`.
+- Example state file: `/app/state/slimebot-state.sqlite3`.
 - Main app config files in repo root:
   - `slimebot.yaml`
   - `slimebot.example.yaml`

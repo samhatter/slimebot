@@ -9,3 +9,4 @@ slimebot-routing.json
 logs/
 codex-config.toml
 secrets.env
+state/

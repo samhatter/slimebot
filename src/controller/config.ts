@@ -16,6 +16,6 @@ export function parseControllerConfig(root: JsonRecord): ControllerConfig {
 
   return {
     commandPrefix: optionalString(controllerRecord ?? {}, "commandPrefix") ?? "!",
-    stateDatabasePath: optionalString(controllerRecord ?? {}, "stateDatabasePath") ?? "slimebot-state.sqlite3"
+    stateDatabasePath: optionalString(controllerRecord ?? {}, "stateDatabasePath") ?? "/app/state/slimebot-state.sqlite3"
   };
 }
