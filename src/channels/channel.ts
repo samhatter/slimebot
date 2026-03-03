@@ -8,14 +8,11 @@ import type { ControllerCommand } from "./commands.js";
 /** Shape for thread status messages rendered by channel implementations. */
 export type ChannelThreadStatusView = {
   threadId: string;
-  name: string;
   preview: string;
   updatedAt: string;
   modelProvider: string;
   selectedModel: string;
   statusType: string;
-  agentNickname: string;
-  agentRole: string;
   totalInputTokens?: number;
   totalOutputTokens?: number;
   totalTokens?: number;

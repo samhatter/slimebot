@@ -835,7 +835,6 @@ export class BotController {
 
       const threadRecord = parsedThreadRead.thread;
 
-      const name = threadRecord.name ?? "-";
       const preview = threadRecord.preview;
       const updatedAt = Number.isFinite(threadRecord.updatedAt)
         ? new Date(threadRecord.updatedAt * 1000).toISOString()
@@ -845,8 +844,6 @@ export class BotController {
         this.getThreadState(threadId)?.modelOverride
         ?? "default";
       const statusType = threadRecord.status.type;
-      const agentNickname = threadRecord.agentNickname ?? "-";
-      const agentRole = threadRecord.agentRole ?? "-";
       const defaultEffort = this.getThreadState(threadId)?.reasoningEffort ?? "default";
 
       const tokenUsage = this.getThreadState(threadId)?.tokenUsage;
@@ -859,14 +856,11 @@ export class BotController {
 
       await this.channel.sendThreadStatus(roomId, {
         threadId,
-        name,
         preview,
         updatedAt,
         modelProvider,
         selectedModel,
         statusType,
-        agentNickname,
-        agentRole,
         totalInputTokens: inputTokens,
         totalOutputTokens: outputTokens,
         totalTokens,
