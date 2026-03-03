@@ -10,6 +10,8 @@ services:
     environment:
       HOME: /var/lib/slimebot/codex
       SLIMEBOT_CONFIG_PATH: /app/slimebot.yaml
+    env_file:
+      - secrets.env
     volumes:
       - ./codex:/var/lib/slimebot/codex
       - ./workspace:/var/lib/slimebot/workspace
