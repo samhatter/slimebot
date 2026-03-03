@@ -35,8 +35,10 @@ export class MatrixChannel extends Channel {
   private static readonly maxRateLimitRetries = 8;
   private static readonly typingTimeoutMs = 30_000;
   private static readonly typingHeartbeatMs = 20_000;
+  private static readonly typingResetDelayMs = 500;
   private readonly activeTurnCountByRoomId = new Map<string, number>();
   private readonly typingHeartbeatByRoomId = new Map<string, NodeJS.Timeout>();
+  private readonly typingResetTimeoutByRoomId = new Map<string, NodeJS.Timeout>();
 
   public constructor(private readonly config: MatrixConfig) {
     super();
@@ -149,6 +151,8 @@ export class MatrixChannel extends Channel {
       clearInterval(heartbeat);
       this.typingHeartbeatByRoomId.delete(roomId);
     }
+
+    this.clearPendingTypingReset(roomId);
 
     try {
       await this.matrixClient.setTyping(roomId, false);
@@ -270,6 +274,7 @@ export class MatrixChannel extends Channel {
     for (let attempt = 0; attempt <= MatrixChannel.maxRateLimitRetries; attempt += 1) {
       try {
         await this.matrixClient.sendMessage(roomId, payload);
+        this.resetTypingIfTurnActive(roomId);
         return;
       } catch (error) {
         const retryAfterMs = this.getMatrixRetryAfterMs(error);
@@ -294,6 +299,41 @@ export class MatrixChannel extends Channel {
         await this.sleep(waitMs);
       }
     }
+  }
+
+  /** Resets typing (false -> true) after sends while a turn is still active. */
+  private resetTypingIfTurnActive(roomId: string): void {
+    this.clearPendingTypingReset(roomId);
+
+    if ((this.activeTurnCountByRoomId.get(roomId) ?? 0) <= 0) {
+      return;
+    }
+
+    void this.matrixClient.setTyping(roomId, false).catch((error: unknown) => {
+      LogService.warn("matrix-runner", `Failed typing reset(false) room=${roomId}: ${String(error)}`);
+    });
+
+    const timeout = setTimeout(() => {
+      if ((this.activeTurnCountByRoomId.get(roomId) ?? 0) <= 0) {
+        return;
+      }
+
+      void this.matrixClient.setTyping(roomId, true, MatrixChannel.typingTimeoutMs).catch((error: unknown) => {
+        LogService.warn("matrix-runner", `Failed typing reset(true) room=${roomId}: ${String(error)}`);
+      });
+    }, MatrixChannel.typingResetDelayMs);
+
+    this.typingResetTimeoutByRoomId.set(roomId, timeout);
+  }
+
+  private clearPendingTypingReset(roomId: string): void {
+    const timeout = this.typingResetTimeoutByRoomId.get(roomId);
+    if (!timeout) {
+      return;
+    }
+
+    clearTimeout(timeout);
+    this.typingResetTimeoutByRoomId.delete(roomId);
   }
 
   /** Extracts retry delay from Matrix M_LIMIT_EXCEEDED errors, if present. */
