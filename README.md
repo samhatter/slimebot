@@ -88,8 +88,8 @@ General:
 - `!help` — list commands
 - `!new` — create and map a new thread to this room
 - `!resume <threadId>` — resume thread and map to this room
-- `!thread list [archived|true]` — list recent threads (`archived`/`true` lists archived threads)
-- `!thread status [threadId]` — show thread status (`thread/read`) for a thread; defaults to mapped thread
+- `!thread [threadId]` — show thread status (`thread/read`) for a thread; defaults to mapped thread
+- `!threads [archived|true]` — list recent threads (`archived`/`true` lists archived threads)
 - `!models` — list model catalog response
 - `!model <modelId> [threadId]` — set selected model for subsequent turns (defaults to mapped thread)
 - `!account` — read account/auth information
@@ -121,6 +121,7 @@ Model & reasoning aliases:
 - `!m <modelId> [threadId]` — alias for `!model`
 - `!r [default|low|medium|high] [threadId]` — alias for `!reasoning`
 - `!v [on|off]` — alias for `!verbosity`
+- `!t [threadId]` — alias for `!thread`
 
 Auth:
 

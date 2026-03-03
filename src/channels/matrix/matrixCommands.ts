@@ -14,6 +14,8 @@ const matrixCommandAliases: Record<string, string> = {
   r: "reasoning",
   m: "model",
   v: "verbosity",
+  n: "new",
+  t: "thread",
 };
 
 /** Parses a raw Matrix text message into a controller command, if any. */

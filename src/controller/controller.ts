@@ -662,6 +662,9 @@ export class BotController {
       case "thread":
         await this.handleThreadCommand(roomId, command);
         return;
+      case "threads":
+        await this.handleThreadsCommand(roomId, command);
+        return;
       case "rollback":
         await this.handleRollbackCommand(roomId, command);
         return;
@@ -716,8 +719,8 @@ export class BotController {
       "- !help: Show this command list",
       "- !new: Create and map a new Codex thread for this room",
       "- !resume <threadId>: Resume a thread and map it to this room",
-      "- !thread list [archived|true]: List recent threads",
-      "- !thread status [threadId]: Show status for a thread (mapped thread by default)",
+      "- !thread [threadId]: Show status for a thread (mapped thread by default) (!t)",
+      "- !threads [archived|true]: List recent threads",
       "- !rollback [numTurns] [threadId]: Roll back turns (default 1)",
       "- !compact [threadId]: Trigger thread compaction",
       "- !archive [threadId]: Archive a thread",
@@ -810,97 +813,100 @@ export class BotController {
     }
   }
 
-  /** Handles thread subcommands like list and status. */
+  /** Shows status for a thread (mapped thread by default). */
   private async handleThreadCommand(roomId: string, command: ControllerCommand): Promise<void> {
     if (!this.codexAppServer) {
       await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
-    const subcommandArg = command.args[0]?.trim().toLowerCase();
-
-    if (!subcommandArg || subcommandArg === "list" || subcommandArg === "archived" || subcommandArg === "true") {
-      const archivedArg = subcommandArg === "list" ? command.args[1]?.toLowerCase() : subcommandArg;
-      const archived = archivedArg === "archived" || archivedArg === "true";
-
-      try {
-        const result = await this.codexAppServer.threadList({
-          limit: 20,
-          sortKey: "updated_at",
-          archived
-        });
-        await this.channel.sendThreadList(roomId, result, archived);
-      } catch (error) {
-        await this.channel.sendSystemMessage(roomId, `Failed to list threads: ${String(error)}`);
-        this.logWarn(`Failed to list threads: ${String(error)}`);
-      }
+    const threadId = this.resolveThreadIdForCommand(roomId, command.args[0]?.trim(), "!thread [threadId]");
+    if (!threadId) {
       return;
     }
 
-    if (subcommandArg === "status") {
-      const threadId = this.resolveThreadIdForCommand(roomId, command.args[1]?.trim(), "!thread status [threadId]");
-      if (!threadId) {
+    try {
+      const result = await this.codexAppServer.threadRead({ threadId });
+      const parsedThreadRead = parseThreadReadResult(result);
+      if (!parsedThreadRead) {
+        await this.channel.sendJsonResponse(roomId, "Thread status response", result);
         return;
       }
 
-      try {
-        const result = await this.codexAppServer.threadRead({ threadId });
-        const parsedThreadRead = parseThreadReadResult(result);
-        if (!parsedThreadRead) {
-          await this.channel.sendJsonResponse(roomId, "Thread status response", result);
-          return;
-        }
+      const threadRecord = parsedThreadRead.thread;
 
-        const threadRecord = parsedThreadRead.thread;
+      const name = threadRecord.name ?? "-";
+      const preview = threadRecord.preview;
+      const updatedAt = Number.isFinite(threadRecord.updatedAt)
+        ? new Date(threadRecord.updatedAt * 1000).toISOString()
+        : "-";
+      const modelProvider = threadRecord.modelProvider;
+      const selectedModel =
+        this.getThreadState(threadId)?.modelOverride
+        ?? "default";
+      const statusType = threadRecord.status.type;
+      const agentNickname = threadRecord.agentNickname ?? "-";
+      const agentRole = threadRecord.agentRole ?? "-";
+      const defaultEffort = this.getThreadState(threadId)?.reasoningEffort ?? "default";
 
-        const name = threadRecord.name ?? "-";
-        const preview = threadRecord.preview;
-        const updatedAt = Number.isFinite(threadRecord.updatedAt)
-          ? new Date(threadRecord.updatedAt * 1000).toISOString()
-          : "-";
-        const modelProvider = threadRecord.modelProvider;
-        const selectedModel =
-          this.getThreadState(threadId)?.modelOverride
-          ?? "default";
-        const statusType = threadRecord.status.type;
-        const agentNickname = threadRecord.agentNickname ?? "-";
-        const agentRole = threadRecord.agentRole ?? "-";
-        const defaultEffort = this.getThreadState(threadId)?.reasoningEffort ?? "default";
+      const tokenUsage = this.getThreadState(threadId)?.tokenUsage;
+      const inputTokens = tokenUsage?.inputTokens;
+      const outputTokens = tokenUsage?.outputTokens;
+      const totalTokens = tokenUsage?.totalTokens;
+      const lastInputTokens = tokenUsage?.lastInputTokens;
+      const lastOutputTokens = tokenUsage?.lastOutputTokens;
+      const lastTotalTokens = tokenUsage?.lastTotalTokens;
 
-        const tokenUsage = this.getThreadState(threadId)?.tokenUsage;
-        const inputTokens = tokenUsage?.inputTokens;
-        const outputTokens = tokenUsage?.outputTokens;
-        const totalTokens = tokenUsage?.totalTokens;
-        const lastInputTokens = tokenUsage?.lastInputTokens;
-        const lastOutputTokens = tokenUsage?.lastOutputTokens;
-        const lastTotalTokens = tokenUsage?.lastTotalTokens;
+      await this.channel.sendThreadStatus(roomId, {
+        threadId,
+        name,
+        preview,
+        updatedAt,
+        modelProvider,
+        selectedModel,
+        statusType,
+        agentNickname,
+        agentRole,
+        totalInputTokens: inputTokens,
+        totalOutputTokens: outputTokens,
+        totalTokens,
+        lastInputTokens,
+        lastOutputTokens,
+        lastTotalTokens,
+        defaultEffort
+      });
+    } catch (error) {
+      await this.channel.sendSystemMessage(roomId, `Failed to read thread ${threadId}: ${String(error)}`);
+      this.logWarn(`Failed to read thread ${threadId}: ${String(error)}`);
+    }
+  }
 
-        await this.channel.sendThreadStatus(roomId, {
-          threadId,
-          name,
-          preview,
-          updatedAt,
-          modelProvider,
-          selectedModel,
-          statusType,
-          agentNickname,
-          agentRole,
-          totalInputTokens: inputTokens,
-          totalOutputTokens: outputTokens,
-          totalTokens,
-          lastInputTokens,
-          lastOutputTokens,
-          lastTotalTokens,
-          defaultEffort
-        });
-      } catch (error) {
-        await this.channel.sendSystemMessage(roomId, `Failed to read thread ${threadId}: ${String(error)}`);
-        this.logWarn(`Failed to read thread ${threadId}: ${String(error)}`);
-      }
+  /** Lists recent threads. */
+  private async handleThreadsCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    if (!this.codexAppServer) {
+      await this.channel.sendSystemMessage(roomId, "Codex app server is not configured.");
       return;
     }
 
-    await this.channel.sendSystemMessage(roomId, "Usage: !thread <list|status> [args]");
+    const archivedArg = command.args[0]?.trim().toLowerCase();
+    if (archivedArg && archivedArg !== "archived" && archivedArg !== "true") {
+      await this.channel.sendSystemMessage(roomId, "Usage: !threads [archived|true]");
+      return;
+    }
+
+    const archived = archivedArg === "archived" || archivedArg === "true";
+
+    try {
+      const result = await this.codexAppServer.threadList({
+        limit: 20,
+        sortKey: "updated_at",
+        archived
+      });
+      await this.channel.sendThreadList(roomId, result, archived);
+    } catch (error) {
+      await this.channel.sendSystemMessage(roomId, `Failed to list threads: ${String(error)}`);
+      this.logWarn(`Failed to list threads: ${String(error)}`);
+    }
   }
 
   /** Rolls back turns for a thread by a requested number of turns. */

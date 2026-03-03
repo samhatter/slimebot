@@ -8,6 +8,7 @@ export const controllerCommandNames = [
   "new",
   "resume",
   "thread",
+  "threads",
   "rollback",
   "compact",
   "archive",
