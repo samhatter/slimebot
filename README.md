@@ -126,6 +126,8 @@ startup_timeout_sec = 20
 tool_timeout_sec = 120
 ```
 
+A fuller Codex config example (including `context7`) is available in `codex-config.example.toml`.
+
 ## Commands
 
 General:

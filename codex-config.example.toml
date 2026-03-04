@@ -13,3 +13,10 @@ command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
 startup_timeout_sec = 20
 tool_timeout_sec = 120
+
+[mcp_servers.slimebot_controller]
+command = "node"
+args = ["/var/lib/slimebot/workspace/repos/slimebot/dist/mcp/controllerSocketBridge.js"]
+env = { SLIMEBOT_CONTROLLER_MCP_SOCKET_PATH = "/var/lib/slimebot/workspace/slimebot-controller.sock" }
+startup_timeout_sec = 20
+tool_timeout_sec = 120
