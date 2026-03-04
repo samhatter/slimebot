@@ -88,12 +88,14 @@ Default Codex launch is equivalent to:
 
 Slimebot exposes a controller-owned MCP server over a Unix socket (default: `/var/lib/slimebot/workspace/slimebot-controller.sock`).
 
-Exposed tools:
+Exposed tools are composed from:
 
-- `schedule_list`
-- `schedule_create`
-- `schedule_cancel`
-- `matrix_upload_file`
+- controller-level tools:
+  - `schedule_list`
+  - `schedule_create`
+  - `schedule_cancel`
+- channel-provided tools:
+  - Matrix channel currently registers `matrix_upload_file`
 
 ## Codex MCP Bridge
 

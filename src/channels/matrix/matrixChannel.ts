@@ -2,13 +2,15 @@
  * @fileoverview Matrix channel implementation for Slimebot.
  */
 
-import { access, mkdir, writeFile } from "node:fs/promises";
-import { extname, join, resolve } from "node:path";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
 import { LogService, MatrixClient } from "matrix-bot-sdk";
+import { z } from "zod";
 import type { MatrixConfig } from "./config.js";
 import {
   Channel,
   ChannelMessage,
+  type ChannelMcpToolDefinition,
   type ChannelApprovalRequest,
   ChannelOutboundMessage,
   type ChannelUploadInput,
@@ -34,6 +36,11 @@ import { parseMatrixCommand } from "./matrixCommands.js";
  * Matrix-backed channel that maps high-level controller responses to Matrix messages.
  */
 export class MatrixChannel extends Channel {
+  private static readonly matrixUploadToolSchema = z.object({
+    roomId: z.string(),
+    filePath: z.string(),
+    caption: z.string().optional()
+  });
   private readonly matrixClient: MatrixClient;
   private readonly processStartMs = Date.now();
   private static readonly maxRateLimitRetries = 8;
@@ -135,6 +142,18 @@ export class MatrixChannel extends Channel {
     if (input.caption?.trim()) {
       await this.sendMarkdownText(roomId, input.caption.trim());
     }
+  }
+
+  public override getMcpToolDefinitions(): ChannelMcpToolDefinition[] {
+    return [
+      {
+        name: "matrix_upload_file",
+        title: "Upload Matrix File",
+        description: "Upload a local workspace file into a Matrix room.",
+        inputSchema: MatrixChannel.matrixUploadToolSchema.shape,
+        execute: async (input) => this.handleMatrixUploadMcpTool(input)
+      }
+    ];
   }
 
   public async indicateTurnStarted(roomId: string): Promise<void> {
@@ -432,12 +451,20 @@ export class MatrixChannel extends Channel {
    * Resolves the attachments directory, preferring the Docker workspace mount.
    */
   private async getAttachmentsDirectory(): Promise<string> {
-    const dockerWorkspacePath = "/var/lib/slimebot/workspace";
-    const fallbackWorkspacePath = resolve(process.cwd(), "workspace");
-    const workspacePath = (await this.pathExists(dockerWorkspacePath)) ? dockerWorkspacePath : fallbackWorkspacePath;
+    const workspacePath = await this.getWorkspaceRoot();
     const attachmentsPath = join(workspacePath, "attachments");
     await mkdir(attachmentsPath, { recursive: true });
     return attachmentsPath;
+  }
+
+  /** Resolves the workspace root path used for filesystem-bound channel operations. */
+  private async getWorkspaceRoot(): Promise<string> {
+    const dockerWorkspacePath = "/var/lib/slimebot/workspace";
+    if (await this.pathExists(dockerWorkspacePath)) {
+      return dockerWorkspacePath;
+    }
+
+    return resolve(process.cwd(), "workspace");
   }
 
   /**
@@ -660,5 +687,72 @@ export class MatrixChannel extends Channel {
     }
 
     return "m.file";
+  }
+
+  /** Maps file extensions to MIME types for upload metadata. */
+  private getMimeTypeFromPath(filePath: string): string {
+    const extension = extname(filePath).toLowerCase();
+    switch (extension) {
+      case ".jpg":
+      case ".jpeg":
+        return "image/jpeg";
+      case ".png":
+        return "image/png";
+      case ".gif":
+        return "image/gif";
+      case ".webp":
+        return "image/webp";
+      case ".mp4":
+        return "video/mp4";
+      case ".mp3":
+        return "audio/mpeg";
+      case ".wav":
+        return "audio/wav";
+      case ".pdf":
+        return "application/pdf";
+      case ".json":
+        return "application/json";
+      case ".txt":
+      case ".md":
+        return "text/plain";
+      default:
+        return "application/octet-stream";
+    }
+  }
+
+  /** Handles Matrix-local file upload via channel-provided MCP tool. */
+  private async handleMatrixUploadMcpTool(input: Record<string, unknown>): Promise<unknown> {
+    const parsedInput = MatrixChannel.matrixUploadToolSchema.parse(input);
+    const roomId = parsedInput.roomId.trim();
+    const filePath = parsedInput.filePath.trim();
+    if (!roomId || !filePath) {
+      throw new Error("roomId and filePath are required.");
+    }
+
+    const workspaceRoot = await this.getWorkspaceRoot();
+    const absolutePath = filePath.startsWith("/")
+      ? resolve(filePath)
+      : resolve(workspaceRoot, filePath);
+    if (!absolutePath.startsWith(`${workspaceRoot}/`) && absolutePath !== workspaceRoot) {
+      throw new Error(`Upload path must be inside ${workspaceRoot}.`);
+    }
+
+    const data = await readFile(absolutePath);
+    const fileName = basename(absolutePath);
+    const contentType = this.getMimeTypeFromPath(absolutePath);
+    await this.sendUploadedFile(roomId, {
+      filePath: absolutePath,
+      fileName,
+      contentType,
+      data,
+      caption: parsedInput.caption?.trim() || undefined
+    });
+
+    return {
+      uploaded: true,
+      filePath: absolutePath,
+      fileName,
+      contentType
+    };
   }
 }

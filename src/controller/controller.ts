@@ -3,8 +3,7 @@
  * and Codex app-server interactions.
  */
 
-import { readFile } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   type Channel
 } from "../channels/channel.js";
@@ -111,9 +110,9 @@ export class BotController {
       {
         listSchedules: (roomId?: string) => this.listSchedulesForMcp(roomId),
         createSchedule: (input) => this.createScheduleForMcp(input),
-        cancelSchedule: (roomId: string, id: number) => this.cancelScheduleForMcp(roomId, id),
-        uploadMatrixFile: (input) => this.uploadMatrixFileForMcp(input)
+        cancelSchedule: (roomId: string, id: number) => this.cancelScheduleForMcp(roomId, id)
       },
+      this.channel.getMcpToolDefinitions(),
       this.logInfo.bind(this),
       this.logWarn.bind(this)
     );
@@ -1569,37 +1568,6 @@ export class BotController {
     }
   }
 
-  /** Maps file extensions to MIME types for Matrix upload metadata. */
-  private getMimeTypeFromPath(filePath: string): string {
-    const extension = extname(filePath).toLowerCase();
-    switch (extension) {
-      case ".jpg":
-      case ".jpeg":
-        return "image/jpeg";
-      case ".png":
-        return "image/png";
-      case ".gif":
-        return "image/gif";
-      case ".webp":
-        return "image/webp";
-      case ".mp4":
-        return "video/mp4";
-      case ".mp3":
-        return "audio/mpeg";
-      case ".wav":
-        return "audio/wav";
-      case ".pdf":
-        return "application/pdf";
-      case ".json":
-        return "application/json";
-      case ".txt":
-      case ".md":
-        return "text/plain";
-      default:
-        return "application/octet-stream";
-    }
-  }
-
   /** MCP handler for listing schedules. */
   private listSchedulesForMcp(roomId?: string): unknown {
     if (roomId?.trim()) {
@@ -1675,36 +1643,6 @@ export class BotController {
 
     this.clearScheduledMessageTimer(normalizedId);
     return { cancelled: true, id: normalizedId };
-  }
-
-  /** MCP handler for Matrix file uploads from local workspace files. */
-  private async uploadMatrixFileForMcp(input: { roomId: string; filePath: string; caption?: string }): Promise<unknown> {
-    const roomId = input.roomId.trim();
-    const filePath = input.filePath.trim();
-    if (!roomId || !filePath) {
-      throw new Error("roomId and filePath are required.");
-    }
-
-    const workspaceRoot = "/var/lib/slimebot/workspace";
-    const absolutePath = filePath.startsWith("/")
-      ? resolve(filePath)
-      : resolve(workspaceRoot, filePath);
-
-    if (!absolutePath.startsWith(`${workspaceRoot}/`) && absolutePath !== workspaceRoot) {
-      throw new Error(`Upload path must be inside ${workspaceRoot}.`);
-    }
-
-    const data = await readFile(absolutePath);
-    const fileName = basename(absolutePath);
-    const contentType = this.getMimeTypeFromPath(absolutePath);
-    await this.channel.sendUploadedFile(roomId, {
-      filePath: absolutePath,
-      fileName,
-      contentType,
-      data,
-      caption: input.caption?.trim() || undefined
-    });
-    return { uploaded: true, filePath: absolutePath, fileName, contentType };
   }
 
   /** Resolves a command thread id argument or falls back to the room mapping. */

@@ -22,6 +22,7 @@ Repository guidance for agents working in `repos/slimebot`.
 
 - `BotController` should stay focused on orchestration and event wiring.
 - Channel transports should remain transport-specific; avoid pushing Matrix logic into generic controller utilities.
+- Controller MCP server should expose controller-generic tools only; channel-specific MCP tools should be registered by the channel implementation via `Channel.getMcpToolDefinitions()`.
 - JSON-RPC protocol interaction belongs in `codexProcess/`.
 - Config schema changes should be reflected in:
   - parser code

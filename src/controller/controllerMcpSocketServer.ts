@@ -8,6 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { ChannelMcpToolDefinition } from "../channels/channel.js";
 
 type McpHandlers = {
   listSchedules: (roomId?: string) => unknown;
@@ -19,7 +20,6 @@ type McpHandlers = {
     threadId?: string;
   }) => Promise<unknown>;
   cancelSchedule: (roomId: string, id: number) => Promise<unknown>;
-  uploadMatrixFile: (input: { roomId: string; filePath: string; caption?: string }) => Promise<unknown>;
 };
 
 function serializeJsonRpc(message: JSONRPCMessage): string {
@@ -118,7 +118,7 @@ class SocketLineTransport implements Transport {
 }
 
 /**
- * MCP server that listens on a Unix socket and serves scheduler/upload tools.
+ * MCP server that listens on a Unix socket for controller + channel tools.
  */
 export class ControllerMcpSocketServer {
   private readonly server: NetServer;
@@ -128,6 +128,7 @@ export class ControllerMcpSocketServer {
   public constructor(
     private readonly socketPath: string,
     private readonly handlers: McpHandlers,
+    private readonly channelToolDefinitions: readonly ChannelMcpToolDefinition[],
     private readonly logInfo: (message: string) => void,
     private readonly logWarn: (message: string) => void
   ) {
@@ -248,19 +249,24 @@ export class ControllerMcpSocketServer {
       async (args) => toToolTextResult(await this.handlers.cancelSchedule(args.roomId, Math.trunc(args.id)))
     );
 
-    server.registerTool(
-      "matrix_upload_file",
-      {
-        title: "Upload Matrix File",
-        description: "Upload a local workspace file into a Matrix room.",
-        inputSchema: {
-          roomId: z.string(),
-          filePath: z.string(),
-          caption: z.string().optional()
-        }
-      },
-      async (args) => toToolTextResult(await this.handlers.uploadMatrixFile(args))
-    );
+    const registeredToolNames = new Set<string>(["schedule_list", "schedule_create", "schedule_cancel"]);
+    for (const toolDefinition of this.channelToolDefinitions) {
+      if (registeredToolNames.has(toolDefinition.name)) {
+        this.logWarn(`Skipping duplicate MCP tool name from channel: ${toolDefinition.name}`);
+        continue;
+      }
+
+      registeredToolNames.add(toolDefinition.name);
+      server.registerTool(
+        toolDefinition.name,
+        {
+          title: toolDefinition.title,
+          description: toolDefinition.description,
+          inputSchema: toolDefinition.inputSchema
+        },
+        async (args) => toToolTextResult(await toolDefinition.execute(args as Record<string, unknown>))
+      );
+    }
 
     return server;
   }
