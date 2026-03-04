@@ -1,82 +1,88 @@
 # AGENTS.md
 
-This document provides working guidance for coding agents operating in this repository.
+Repository guidance for agents working in `repos/slimebot`.
 
-## Project Overview
+## Project Snapshot
 
-- Name: `slimebot`
-- Runtime: Node.js (ESM, TypeScript)
-- Entrypoint: `src/index.ts`
-- Main orchestration class: `src/controller/controller.ts`
-- Channel abstraction: `src/channels/`
-- Matrix command parsing/aliases: `src/channels/matrix/matrixCommands.ts`
-- Matrix message formatting: `src/channels/matrix/matrixFormatting.ts`
-- Codex app server process wrapper: `src/codexProcess/`
-- Configuration loading/parsing: `src/config/`
+- Project: `slimebot`
+- Runtime: Node.js 22+, TypeScript, ESM
+- Entry point: `src/index.ts`
+- Core orchestrator: `src/controller/controller.ts`
+- Channel layer: `src/channels/` (Matrix implementation in `src/channels/matrix/`)
+- Codex JSON-RPC process wrapper: `src/codexProcess/`
+- Config parsing/loading: `src/config/`
+- State persistence: `src/controller/stateDatabase.ts` (SQLite)
 
-## Codex API Reference
+## Working Agreement
 
-- Codex app-server API overview: https://github.com/openai/codex/tree/main/codex-rs/app-server#api-overview
+- Slimebot operates with GitHub identity `slimebot-codex`, separate from the user.
+- Assume fork-based PRs unless direct upstream push is explicitly confirmed.
+- Keep diffs small and task-focused.
+- Assume concurrent edits by user; re-read touched files before committing.
 
-## Quick Start
+## Architecture Notes
 
-- Install dependencies:
-  - `npm install`
-- Typecheck:
-  - `npm run check`
-- Build:
-  - `npm run build`
-- Run dev mode:
-  - `npm run dev`
-- Run built app:
-  - `npm run start`
+- `BotController` should stay focused on orchestration and event wiring.
+- Channel transports should remain transport-specific; avoid pushing Matrix logic into generic controller utilities.
+- JSON-RPC protocol interaction belongs in `codexProcess/`.
+- Config schema changes should be reflected in:
+  - parser code
+  - `slimebot.example.yaml`
+  - README command/config docs
 
-## Editing Guidelines
+## Command and UX Changes
 
-- Keep behavior changes minimal and targeted to the request.
-- Prefer extracting helpers into focused modules instead of growing `controller.ts`.
-- Preserve existing message text/command UX unless explicitly asked to change it.
-- Avoid broad refactors across channels/config/process layers unless necessary.
-- Do not add new dependencies unless they are clearly justified.
-- Keep docs (`README.md`, `AGENTS.md`) aligned when commands/config/runtime behavior change.
+When adding or changing commands, update all relevant locations:
 
-## Controller Refactor Boundaries
+- command catalog: `src/channels/commands.ts`
+- Matrix alias/parser: `src/channels/matrix/matrixCommands.ts`
+- controller dispatch/help text: `src/controller/controller.ts`
+- formatting/rendering if needed: `src/channels/matrix/matrixFormatting.ts`
+- docs: `README.md` and this file when behavior changes are operationally important
 
-When `src/controller/controller.ts` grows:
+## Matrix Channel Guidance
 
-- Extract pure utility logic to `src/controller/controllerUtils.ts`.
-- Extract command/response parsing helpers to `src/controller/commands.ts`.
-- Extract persistence concerns to `src/controller/stateDatabase.ts`.
-- Keep Matrix-specific rendering in `src/channels/matrix/matrixFormatting.ts`.
-- Keep `BotController` focused on orchestration and event wiring.
+- Preserve rate-limit retry behavior for outbound sends.
+- Preserve typing indicator lifecycle semantics.
+- Inbound attachments are downloaded to workspace attachments and forwarded as path hints; keep this stable unless requested.
+- If adding new Matrix capabilities (media upload, reactions, room actions), keep transport internals in `matrixChannel.ts` and expose only needed abstractions through `Channel`.
 
-## Validation Expectations
+## State and Persistence
 
-After code changes, run at minimum:
+- Room-thread mappings and thread metadata are persisted in SQLite.
+- Avoid schema churn unless required.
+- If schema changes are required, keep migrations backward compatible where possible and document operational impact.
+
+## Build and Validation
+
+Minimum after code changes:
 
 - `npm run check`
 
-If edits touch runtime flow significantly, also run:
+Recommended when runtime flow changes:
 
 - `npm run build`
 
-## Config & Persistence Notes
+If tests are touched or added:
 
-- State persistence path is configured via `controller.stateDatabasePath`.
-- `controller.commandPrefix` is parsed in config, but Matrix command parsing currently accepts canonical commands with or without `!`.
-- Example state file: `/app/state/slimebot-state.sqlite3`.
-- Main app config files in repo root:
-  - `slimebot.yaml`
-  - `slimebot.example.yaml`
+- `npm test`
 
-## Operational Notes
+## GitHub and PR Workflow
 
-- The app can be run via Docker (`Dockerfile`, `docker-compose.yml`) or directly via npm scripts.
-- Avoid committing secrets or local-only config changes.
-- Keep logs and generated artifacts out of source edits unless requested.
+- Preferred remotes:
+  - upstream: `origin` (`samhatter/slimebot`)
+  - fork: `fork` (`slimebot-codex/slimebot`)
+- Typical flow:
+  - `git fetch --all --prune`
+  - branch from `origin/main`
+  - push branch to `fork`
+  - open PR from fork branch into `origin/main`
+- If git push auth fails, use:
+  - `git -c credential.helper='!gh auth git-credential' push ...`
+- If `gh` GraphQL scope errors occur, fall back to `gh api` REST.
 
-## PR / Change Hygiene
+## Operational Safety
 
-- Keep diffs small and coherent.
-- Update docs when adding commands, config keys, or user-visible behavior.
-- If uncertain about intent, choose the simplest implementation that matches existing patterns.
+- Do not commit local secrets, runtime tokens, or local-only config.
+- Avoid destructive git commands unless explicitly requested.
+- Keep generated artifacts and logs out of commits unless explicitly required.
