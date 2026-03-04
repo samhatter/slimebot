@@ -2,7 +2,9 @@
  * @fileoverview Unified schedule spec parsing and recurrence utilities.
  */
 
-import { RRule } from "rrule";
+import rrule from "rrule";
+
+const { RRule } = rrule;
 
 export type ScheduleSpec = {
   version: "v1";
@@ -19,7 +21,7 @@ function assertTimeZone(timeZone: string): void {
   }
 }
 
-function createRuleFromSpec(spec: ScheduleSpec): RRule {
+function createRuleFromSpec(spec: ScheduleSpec) {
   const dtstart = new Date(spec.dtstart);
   if (Number.isNaN(dtstart.getTime())) {
     throw new Error("dtstart must be a valid ISO-8601 timestamp.");
