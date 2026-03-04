@@ -103,6 +103,28 @@ Implemented routes:
 
 The `/openapi.json` document is included so an OpenAPI-to-MCP bridge can expose these routes as tools.
 
+## Native MCP Adapter
+
+This repo also includes a native MCP stdio server that proxies controller capabilities over the Unix socket API:
+
+- Source: `src/mcp/controllerMcpServer.ts`
+- Build/run: `npm run build && npm run start:mcp-controller`
+
+Environment:
+
+- `SLIMEBOT_CONTROLLER_API_SOCKET_PATH` (optional): defaults to `/var/lib/slimebot/workspace/slimebot-controller.sock`
+
+Example Codex MCP config:
+
+```toml
+[mcp_servers.slimebot_controller]
+command = "node"
+args = ["/app/dist/mcp/controllerMcpServer.js"]
+env = { SLIMEBOT_CONTROLLER_API_SOCKET_PATH = "/var/lib/slimebot/workspace/slimebot-controller.sock" }
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+```
+
 ## Commands
 
 General:
