@@ -13,6 +13,20 @@ export function asRecord(value: unknown): JsonRecord | undefined {
   return value as JsonRecord;
 }
 
+/** Reads an optional nested object from a record. */
+export function optionalRecord(record: JsonRecord, key: string): JsonRecord | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Expected object for '${key}'`);
+  }
+
+  return value as JsonRecord;
+}
+
 /** Reads an optional string value from a record and trims whitespace. */
 export function optionalString(record: JsonRecord, key: string): string | undefined {
   const value = record[key];
