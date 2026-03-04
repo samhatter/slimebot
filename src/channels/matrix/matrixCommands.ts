@@ -16,6 +16,7 @@ const matrixCommandAliases: Record<string, string> = {
   v: "verbosity",
   n: "new",
   t: "thread",
+  sch: "schedule"
 };
 
 /** Parses a raw Matrix text message into a controller command, if any. */

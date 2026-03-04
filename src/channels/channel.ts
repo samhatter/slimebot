@@ -4,6 +4,7 @@
 
 import { EventEmitter } from "node:events";
 import type { ControllerCommand } from "./commands.js";
+import type { ZodRawShape } from "zod";
 
 /** Shape for thread status messages rendered by channel implementations. */
 export type ChannelThreadStatusView = {
@@ -45,6 +46,24 @@ export type ChannelToolActivityCompleted = {
   elapsedSeconds: string;
   itemError?: string;
   snapshot?: unknown;
+};
+
+/** Input payload for uploading a local file into a room. */
+export type ChannelUploadInput = {
+  filePath: string;
+  fileName: string;
+  contentType: string;
+  data: Buffer;
+  caption?: string;
+};
+
+/** Channel-provided MCP tool registration consumed by controller MCP server. */
+export type ChannelMcpToolDefinition = {
+  name: string;
+  title: string;
+  description: string;
+  inputSchema: ZodRawShape;
+  execute: (input: Record<string, unknown>) => Promise<unknown>;
 };
 
 /** Normalized inbound room message event emitted by channel implementations. */
@@ -129,6 +148,14 @@ export abstract class Channel extends EventEmitter {
 
   /** Sends a compaction completion notification. */
   public abstract sendCompactionCompleted(roomId: string, threadId: string, turnId?: string): Promise<void>;
+
+  /** Uploads a local file as media to the room. */
+  public abstract sendUploadedFile(roomId: string, input: ChannelUploadInput): Promise<void>;
+
+  /** Channel-owned MCP tools to expose alongside controller-level tools. */
+  public getMcpToolDefinitions(): ChannelMcpToolDefinition[] {
+    return [];
+  }
 
   /** Indicates a turn has started processing for the room. */
   public abstract indicateTurnStarted(roomId: string): Promise<void>;

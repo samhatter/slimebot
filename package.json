@@ -11,13 +11,17 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:mcp-bridge": "node dist/mcp/controllerSocketBridge.js",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@openai/codex": "^0.106.0",
     "js-yaml": "^4.1.1",
-    "matrix-bot-sdk": "^0.8.0"
+    "matrix-bot-sdk": "^0.8.0",
+    "rrule": "^2.8.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

@@ -15,6 +15,8 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
   - rate-limit aware send retries (`M_LIMIT_EXCEEDED`)
   - command parsing with canonical names + aliases
 - SQLite-backed state persistence (room routes + per-thread state).
+- SQLite-backed unified schedule job queue (RRULE-based) with timer restore on startup.
+- Controller-owned MCP server over a Unix domain socket.
 - Startup restore flow that resumes persisted thread mappings when possible.
 - Turn handling:
   - `turn/steer` when a room sends a new message during an in-flight turn
@@ -74,12 +76,57 @@ Key sections:
 - `controller`
   - `commandPrefix` (currently parsed but not enforced by Matrix command parsing)
   - `stateDatabasePath`
+  - `mcpSocketPath` (Unix socket for controller MCP server)
 - `codex`
   - command and args used to launch app-server
 
 Default Codex launch is equivalent to:
 
 - `codex app-server --listen stdio://`
+
+## Controller MCP Server (Unix Socket)
+
+Slimebot exposes a controller-owned MCP server over a Unix socket (default: `/var/lib/slimebot/workspace/slimebot-controller.sock`).
+
+Exposed tools are composed from:
+
+- controller-level tools:
+  - `schedule_list`
+  - `schedule_create`
+  - `schedule_cancel`
+- channel-provided tools:
+  - Matrix channel currently registers `matrix_upload_file`
+
+`schedule_create` expects one unified schedule spec shape:
+
+- `spec.version`: `"v1"`
+- `spec.timezone`: IANA timezone (for example `America/New_York`)
+- `spec.dtstart`: ISO-8601 timestamp
+- `spec.rrule`: RFC5545 RRULE (for example `FREQ=WEEKLY;BYDAY=MO,WE,FR`)
+
+## Codex MCP Bridge
+
+This repo also includes a thin stdio bridge for Codex that forwards bytes between stdio and the controller MCP socket:
+
+- Source: `src/mcp/controllerSocketBridge.ts`
+- Build/run: `npm run build && npm run start:mcp-bridge`
+
+Environment:
+
+- `SLIMEBOT_CONTROLLER_MCP_SOCKET_PATH` (optional): defaults to `/var/lib/slimebot/workspace/slimebot-controller.sock`
+
+Example Codex MCP config:
+
+```toml
+[mcp_servers.slimebot_controller]
+command = "node"
+args = ["/app/dist/mcp/controllerSocketBridge.js"]
+env = { SLIMEBOT_CONTROLLER_MCP_SOCKET_PATH = "/var/lib/slimebot/workspace/slimebot-controller.sock" }
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+```
+
+A fuller Codex config example (including `context7`) is available in `codex-config.example.toml`.
 
 ## Commands
 
@@ -96,6 +143,15 @@ General:
 - `!account ratelimits` — show latest received `account/rateLimits/updated` payload
 - `!reasoning [default|low|medium|high] [threadId]` — show or set per-thread reasoning effort
 - `!verbosity [on|off]` — show or set global tool activity message verbosity (approvals unaffected)
+- `!schedule create <timezone> <ISO-8601-dtstart> <RRULE> <message>` — create schedule from unified spec
+- `!schedule once <ISO-8601> <message>` — create one-shot schedule convenience wrapper
+- `!schedule list` — list active schedules for this room
+- `!schedule cancel <id>` — cancel an active schedule in this room
+
+Examples:
+
+- `!schedule once 2026-03-10T14:00:00Z review PR queue`
+- `!schedule create America/New_York 2026-03-10T09:00:00-05:00 FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR daily standup reminder`
 
 Thread operations:
 
@@ -122,6 +178,7 @@ Model & reasoning aliases:
 - `!r [default|low|medium|high] [threadId]` — alias for `!reasoning`
 - `!v [on|off]` — alias for `!verbosity`
 - `!t [threadId]` — alias for `!thread`
+- `!sch ...` — alias prefix for `!schedule`
 
 Auth:
 
@@ -134,7 +191,7 @@ Auth:
 - If steering fails (stale turn state), Slimebot falls back to `turn/start`.
 - Active turn state is tracked from `turn/started` and `turn/completed` notifications.
 - Pending approval state is tracked per room and cleared when resolved.
-- Room-thread routes and per-thread controller state (reasoning/model overrides, token usage, active-turn metadata, verbosity) are persisted in `controller.stateDatabasePath`.
+- Room-thread routes, per-thread controller state (reasoning/model overrides, token usage, active-turn metadata, verbosity), and scheduled messages are persisted in `controller.stateDatabasePath`.
 
 ## Build & Check
 
