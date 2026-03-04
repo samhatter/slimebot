@@ -11,6 +11,7 @@ import {
   ChannelMessage,
   type ChannelApprovalRequest,
   ChannelOutboundMessage,
+  type ChannelUploadInput,
   type ChannelThreadStatusView,
   type ChannelToolActivityCompleted,
   type ChannelToolActivityStarted
@@ -107,6 +108,33 @@ export class MatrixChannel extends Channel {
   public async sendCompactionCompleted(roomId: string, threadId: string, turnId?: string): Promise<void> {
     const formattedCompaction = formatCompactionCompleted(threadId, turnId);
     await this.sendHtmlText(roomId, formattedCompaction.body, formattedCompaction.formattedBody);
+  }
+
+  public async sendUploadedFile(roomId: string, input: ChannelUploadInput): Promise<void> {
+    const mxcUrl = await this.matrixClient.uploadContent(input.data, input.contentType, input.fileName);
+    const msgtype = this.getMediaMessageType(input.contentType);
+    const payload: {
+      msgtype: "m.image" | "m.video" | "m.audio" | "m.file";
+      body: string;
+      url: string;
+      info: {
+        mimetype: string;
+        size: number;
+      };
+    } = {
+      msgtype,
+      body: input.fileName,
+      url: mxcUrl,
+      info: {
+        mimetype: input.contentType,
+        size: input.data.length
+      }
+    };
+
+    await this.sendMessageWithRateLimitRetry(roomId, payload);
+    if (input.caption?.trim()) {
+      await this.sendMarkdownText(roomId, input.caption.trim());
+    }
   }
 
   public async indicateTurnStarted(roomId: string): Promise<void> {
@@ -505,10 +533,15 @@ export class MatrixChannel extends Channel {
   private async sendMessageWithRateLimitRetry(
     roomId: string,
     payload: {
-      msgtype: "m.text" | "m.notice";
+      msgtype: string;
       body: string;
       format?: "org.matrix.custom.html";
       formatted_body?: string;
+      url?: string;
+      info?: {
+        mimetype?: string;
+        size?: number;
+      };
     }
   ): Promise<void> {
     for (let attempt = 0; attempt <= MatrixChannel.maxRateLimitRetries; attempt += 1) {
@@ -612,5 +645,20 @@ export class MatrixChannel extends Channel {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, delayMs);
     });
+  }
+
+  private getMediaMessageType(contentType: string): "m.image" | "m.video" | "m.audio" | "m.file" {
+    const normalized = contentType.trim().toLowerCase();
+    if (normalized.startsWith("image/")) {
+      return "m.image";
+    }
+    if (normalized.startsWith("video/")) {
+      return "m.video";
+    }
+    if (normalized.startsWith("audio/")) {
+      return "m.audio";
+    }
+
+    return "m.file";
   }
 }

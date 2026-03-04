@@ -3,7 +3,8 @@
  * and Codex app-server interactions.
  */
 
-import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, extname, resolve } from "node:path";
 import {
   type Channel
 } from "../channels/channel.js";
@@ -36,7 +37,7 @@ import {
   shouldIgnoreCodexLogLine,
   stringifyJson
 } from "./controllerUtils.js";
-import { StateDatabase } from "./stateDatabase.js";
+import { StateDatabase, type ScheduledMessageRecord } from "./stateDatabase.js";
 
 type PendingApprovalRequest = {
   requestId: number | string;
@@ -74,6 +75,10 @@ type ThreadState = {
   tokenUsage?: ThreadTokenUsage;
 };
 
+type ScheduledMessage = ScheduledMessageRecord & {
+  timeout?: NodeJS.Timeout;
+};
+
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
@@ -83,6 +88,7 @@ export class BotController {
   private readonly pendingToolActivityByKey = new Map<string, PendingToolActivity>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
+  private readonly scheduledMessagesById = new Map<number, ScheduledMessage>();
   private toolActivityMessagesEnabled = true;
   private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
@@ -124,6 +130,7 @@ export class BotController {
     this.codexAppServer?.start();
     await this.initializeCodexAppServer();
     await this.restoreRoomThreadRoutes();
+    this.restoreScheduledMessages();
 
     await this.channel.start();
     this.logInfo("Bot runner started");
@@ -132,6 +139,7 @@ export class BotController {
   /** Registers process signal handlers to stop the Codex app server cleanly. */
   private registerShutdownHandlers(): void {
     const shutdown = (): void => {
+      this.clearAllScheduledMessageTimers();
       this.codexAppServer?.stop("SIGTERM");
     };
 
@@ -707,6 +715,12 @@ export class BotController {
       case "verbosity":
         await this.handleVerbosityCommand(roomId, command);
         return;
+      case "schedule":
+        await this.handleScheduleCommand(roomId, command);
+        return;
+      case "upload":
+        await this.handleUploadCommand(roomId, command);
+        return;
       default:
         return;
     }
@@ -734,7 +748,12 @@ export class BotController {
       "- !model <modelId> [threadId]: Set selected model for subsequent turns (!m)",
       "- !account [ratelimits]: Show account information or latest rate limits",
       "- !reasoning [default|low|medium|high] [threadId]: Show or set reasoning per thread (!r)",
-      "- !verbosity [on|off]: Show or set tool activity message verbosity (!v)"
+      "- !verbosity [on|off]: Show or set tool activity message verbosity (!v)",
+      "- !schedule add <secondsFromNow> <message>: Schedule a message to the mapped thread",
+      "- !schedule at <ISO-8601> <message>: Schedule a message at absolute time (UTC recommended)",
+      "- !schedule list: List pending schedules for this room",
+      "- !schedule cancel <id>: Cancel a pending schedule in this room",
+      "- !upload <absolute-or-relative-workspace-path> [caption]: Upload a local file to Matrix"
     ];
 
     await this.channel.sendHelp(roomId, lines);
@@ -1235,6 +1254,145 @@ export class BotController {
     );
   }
 
+  /** Creates, lists, and cancels scheduled prompts for the mapped thread in this room. */
+  private async handleScheduleCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    const subcommand = command.args[0]?.trim().toLowerCase();
+    if (!subcommand) {
+      await this.channel.sendSystemMessage(
+        roomId,
+        "Usage: !schedule <add|at|list|cancel> ..."
+      );
+      return;
+    }
+
+    if (subcommand === "list") {
+      const pendingSchedules = this.stateDatabase.listPendingScheduledMessagesByRoom(roomId);
+      if (pendingSchedules.length === 0) {
+        await this.channel.sendSystemMessage(roomId, "No pending schedules for this room.");
+        return;
+      }
+
+      const lines = pendingSchedules.map((scheduledMessage) => {
+        const runAtIso = new Date(scheduledMessage.runAtMs).toISOString();
+        return `#${String(scheduledMessage.id)} at ${runAtIso} -> ${scheduledMessage.message}`;
+      });
+      await this.channel.sendSystemMessage(roomId, `Pending schedules:\n${lines.join("\n")}`);
+      return;
+    }
+
+    if (subcommand === "cancel") {
+      const idArg = command.args[1]?.trim();
+      const id = idArg ? Number(idArg) : Number.NaN;
+      if (!Number.isFinite(id) || id <= 0) {
+        await this.channel.sendSystemMessage(roomId, "Usage: !schedule cancel <id>");
+        return;
+      }
+
+      const wasCancelled = this.stateDatabase.cancelScheduledMessage(roomId, Math.trunc(id));
+      if (!wasCancelled) {
+        await this.channel.sendSystemMessage(roomId, `No pending schedule ${idArg} found for this room.`);
+        return;
+      }
+
+      this.clearScheduledMessageTimer(Math.trunc(id));
+      await this.channel.sendSystemMessage(roomId, `Cancelled schedule #${idArg}.`);
+      return;
+    }
+
+    if (subcommand !== "add" && subcommand !== "at") {
+      await this.channel.sendSystemMessage(roomId, "Usage: !schedule <add|at|list|cancel> ...");
+      return;
+    }
+
+    const threadId = this.roomThreadRoutes.get(roomId);
+    if (!threadId) {
+      await this.channel.sendSystemMessage(roomId, "No mapped thread for this room. Run !new or !resume first.");
+      return;
+    }
+
+    const whenArg = command.args[1]?.trim();
+    const messageText = command.args.slice(2).join(" ").trim();
+    if (!whenArg || !messageText) {
+      await this.channel.sendSystemMessage(
+        roomId,
+        subcommand === "add"
+          ? "Usage: !schedule add <secondsFromNow> <message>"
+          : "Usage: !schedule at <ISO-8601> <message>"
+      );
+      return;
+    }
+
+    let runAtMs: number;
+    if (subcommand === "add") {
+      const secondsFromNow = Number(whenArg);
+      if (!Number.isFinite(secondsFromNow) || secondsFromNow < 1) {
+        await this.channel.sendSystemMessage(roomId, "For !schedule add, secondsFromNow must be a positive number.");
+        return;
+      }
+      runAtMs = Date.now() + Math.trunc(secondsFromNow * 1000);
+    } else {
+      const parsedMs = Date.parse(whenArg);
+      if (!Number.isFinite(parsedMs)) {
+        await this.channel.sendSystemMessage(roomId, "Invalid ISO-8601 timestamp. Example: 2026-03-05T12:30:00Z");
+        return;
+      }
+      runAtMs = Math.trunc(parsedMs);
+    }
+
+    if (runAtMs <= Date.now()) {
+      await this.channel.sendSystemMessage(roomId, "Scheduled time must be in the future.");
+      return;
+    }
+
+    const scheduledMessage = this.stateDatabase.createScheduledMessage({
+      roomId,
+      threadId,
+      message: messageText,
+      runAtMs
+    });
+    this.registerScheduledMessage(scheduledMessage);
+
+    await this.channel.sendSystemMessage(
+      roomId,
+      `Scheduled #${String(scheduledMessage.id)} for ${new Date(runAtMs).toISOString()}.`
+    );
+  }
+
+  /** Uploads a local workspace file to the current Matrix room. */
+  private async handleUploadCommand(roomId: string, command: ControllerCommand): Promise<void> {
+    const pathArg = command.args[0]?.trim();
+    if (!pathArg) {
+      await this.channel.sendSystemMessage(roomId, "Usage: !upload <path> [caption]");
+      return;
+    }
+
+    const workspaceRoot = "/var/lib/slimebot/workspace";
+    const absolutePath = pathArg.startsWith("/")
+      ? resolve(pathArg)
+      : resolve(workspaceRoot, pathArg);
+    if (!absolutePath.startsWith(`${workspaceRoot}/`) && absolutePath !== workspaceRoot) {
+      await this.channel.sendSystemMessage(roomId, `Upload path must be inside ${workspaceRoot}.`);
+      return;
+    }
+
+    try {
+      const data = await readFile(absolutePath);
+      const fileName = basename(absolutePath);
+      const contentType = this.getMimeTypeFromPath(absolutePath);
+      const caption = command.args.slice(1).join(" ").trim();
+
+      await this.channel.sendUploadedFile(roomId, {
+        filePath: absolutePath,
+        fileName,
+        contentType,
+        data,
+        caption: caption || undefined
+      });
+    } catch (error) {
+      await this.channel.sendSystemMessage(roomId, `Failed to upload ${absolutePath}: ${String(error)}`);
+    }
+  }
+
   /** Starts the ChatGPT login flow and stores callback context for completion. */
   private async handleLoginCommand(roomId: string): Promise<void> {
     if (!this.codexAppServer) {
@@ -1347,6 +1505,122 @@ export class BotController {
           `Failed to resume mapped thread for room ${roomId} threadId=${threadId}: ${String(error)}`
         );
       }
+    }
+  }
+
+  /** Restores pending scheduled messages from SQLite and re-arms local timers. */
+  private restoreScheduledMessages(): void {
+    const pendingSchedules = this.stateDatabase.listAllPendingScheduledMessages();
+    for (const pendingSchedule of pendingSchedules) {
+      this.registerScheduledMessage(pendingSchedule);
+    }
+    this.logInfo(`Restored ${String(pendingSchedules.length)} pending schedule(s).`);
+  }
+
+  /** Registers a scheduled message and arms its timeout. */
+  private registerScheduledMessage(scheduledMessage: ScheduledMessageRecord): void {
+    this.clearScheduledMessageTimer(scheduledMessage.id);
+
+    const delayMs = Math.max(0, scheduledMessage.runAtMs - Date.now());
+    const timeout = setTimeout(() => {
+      void this.executeScheduledMessage(scheduledMessage.id);
+    }, delayMs);
+
+    this.scheduledMessagesById.set(scheduledMessage.id, {
+      ...scheduledMessage,
+      timeout
+    });
+  }
+
+  /** Clears all active schedule timers. */
+  private clearAllScheduledMessageTimers(): void {
+    for (const [id] of this.scheduledMessagesById.entries()) {
+      this.clearScheduledMessageTimer(id);
+    }
+  }
+
+  /** Clears an active timer for a specific schedule id. */
+  private clearScheduledMessageTimer(id: number): void {
+    const scheduledMessage = this.scheduledMessagesById.get(id);
+    if (!scheduledMessage) {
+      return;
+    }
+
+    if (scheduledMessage.timeout) {
+      clearTimeout(scheduledMessage.timeout);
+    }
+
+    this.scheduledMessagesById.delete(id);
+  }
+
+  /** Executes a scheduled message by forwarding it into the target thread. */
+  private async executeScheduledMessage(id: number): Promise<void> {
+    const scheduledMessage = this.scheduledMessagesById.get(id);
+    if (!scheduledMessage) {
+      return;
+    }
+
+    this.clearScheduledMessageTimer(id);
+
+    if (!this.codexAppServer) {
+      const errorText = "Codex app server is not configured.";
+      this.stateDatabase.markScheduledMessageFailed(id, errorText);
+      await this.channel.sendSystemMessage(
+        scheduledMessage.roomId,
+        `Scheduled message #${String(id)} failed: ${errorText}`
+      );
+      return;
+    }
+
+    try {
+      await this.sendUserMessageToThread(
+        scheduledMessage.roomId,
+        scheduledMessage.threadId,
+        `[Scheduled message]\n${scheduledMessage.message}`
+      );
+      this.stateDatabase.markScheduledMessageCompleted(id);
+      await this.channel.sendSystemMessage(
+        scheduledMessage.roomId,
+        `Delivered scheduled message #${String(id)}.`
+      );
+    } catch (error) {
+      const errorText = String(error);
+      this.stateDatabase.markScheduledMessageFailed(id, errorText);
+      await this.channel.sendSystemMessage(
+        scheduledMessage.roomId,
+        `Scheduled message #${String(id)} failed: ${errorText}`
+      );
+    }
+  }
+
+  /** Maps file extensions to MIME types for Matrix upload metadata. */
+  private getMimeTypeFromPath(filePath: string): string {
+    const extension = extname(filePath).toLowerCase();
+    switch (extension) {
+      case ".jpg":
+      case ".jpeg":
+        return "image/jpeg";
+      case ".png":
+        return "image/png";
+      case ".gif":
+        return "image/gif";
+      case ".webp":
+        return "image/webp";
+      case ".mp4":
+        return "video/mp4";
+      case ".mp3":
+        return "audio/mpeg";
+      case ".wav":
+        return "audio/wav";
+      case ".pdf":
+        return "application/pdf";
+      case ".json":
+        return "application/json";
+      case ".txt":
+      case ".md":
+        return "text/plain";
+      default:
+        return "application/octet-stream";
     }
   }
 

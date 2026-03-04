@@ -47,6 +47,15 @@ export type ChannelToolActivityCompleted = {
   snapshot?: unknown;
 };
 
+/** Input payload for uploading a local file into a room. */
+export type ChannelUploadInput = {
+  filePath: string;
+  fileName: string;
+  contentType: string;
+  data: Buffer;
+  caption?: string;
+};
+
 /** Normalized inbound room message event emitted by channel implementations. */
 export class ChannelMessage {
   public readonly roomId: string;
@@ -129,6 +138,9 @@ export abstract class Channel extends EventEmitter {
 
   /** Sends a compaction completion notification. */
   public abstract sendCompactionCompleted(roomId: string, threadId: string, turnId?: string): Promise<void>;
+
+  /** Uploads a local file as media to the room. */
+  public abstract sendUploadedFile(roomId: string, input: ChannelUploadInput): Promise<void>;
 
   /** Indicates a turn has started processing for the room. */
   public abstract indicateTurnStarted(roomId: string): Promise<void>;

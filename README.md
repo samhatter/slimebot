@@ -14,7 +14,9 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
   - auto-join invite handling (optionally restricted by `allowedInviteSender`)
   - rate-limit aware send retries (`M_LIMIT_EXCEEDED`)
   - command parsing with canonical names + aliases
+  - local file upload command for sending workspace media (`!upload`)
 - SQLite-backed state persistence (room routes + per-thread state).
+- SQLite-backed scheduled message queue with timer restore on startup.
 - Startup restore flow that resumes persisted thread mappings when possible.
 - Turn handling:
   - `turn/steer` when a room sends a new message during an in-flight turn
@@ -96,6 +98,11 @@ General:
 - `!account ratelimits` — show latest received `account/rateLimits/updated` payload
 - `!reasoning [default|low|medium|high] [threadId]` — show or set per-thread reasoning effort
 - `!verbosity [on|off]` — show or set global tool activity message verbosity (approvals unaffected)
+- `!schedule add <secondsFromNow> <message>` — schedule message delivery to mapped thread
+- `!schedule at <ISO-8601> <message>` — schedule message delivery at absolute time
+- `!schedule list` — list pending schedules for this room
+- `!schedule cancel <id>` — cancel pending schedule in this room
+- `!upload <path> [caption]` — upload local workspace file to the current Matrix room
 
 Thread operations:
 
@@ -122,6 +129,8 @@ Model & reasoning aliases:
 - `!r [default|low|medium|high] [threadId]` — alias for `!reasoning`
 - `!v [on|off]` — alias for `!verbosity`
 - `!t [threadId]` — alias for `!thread`
+- `!sch ...` — alias prefix for `!schedule`
+- `!up <path> [caption]` — alias for `!upload`
 
 Auth:
 
@@ -134,7 +143,7 @@ Auth:
 - If steering fails (stale turn state), Slimebot falls back to `turn/start`.
 - Active turn state is tracked from `turn/started` and `turn/completed` notifications.
 - Pending approval state is tracked per room and cleared when resolved.
-- Room-thread routes and per-thread controller state (reasoning/model overrides, token usage, active-turn metadata, verbosity) are persisted in `controller.stateDatabasePath`.
+- Room-thread routes, per-thread controller state (reasoning/model overrides, token usage, active-turn metadata, verbosity), and scheduled messages are persisted in `controller.stateDatabasePath`.
 
 ## Build & Check
 

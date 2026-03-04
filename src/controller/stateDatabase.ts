@@ -32,6 +32,15 @@ export type PersistedStatePayload = {
   toolActivityMessagesEnabled?: boolean;
 };
 
+export type ScheduledMessageRecord = {
+  id: number;
+  roomId: string;
+  threadId: string;
+  message: string;
+  runAtMs: number;
+  createdAtMs: number;
+};
+
 /** Encapsulates all SQLite state persistence operations. */
 export class StateDatabase {
   private readonly db: DatabaseSync;
@@ -195,6 +204,102 @@ export class StateDatabase {
     }
   }
 
+  /** Creates a new scheduled room/thread message. */
+  public createScheduledMessage(input: {
+    roomId: string;
+    threadId: string;
+    message: string;
+    runAtMs: number;
+  }): ScheduledMessageRecord {
+    const createdAtMs = Date.now();
+    const result = this.db
+      .prepare(
+        `INSERT INTO scheduled_messages (
+          room_id,
+          thread_id,
+          message,
+          run_at_ms,
+          created_at_ms,
+          status
+        ) VALUES (?, ?, ?, ?, ?, 'pending')`
+      )
+      .run(input.roomId, input.threadId, input.message, input.runAtMs, createdAtMs);
+    return {
+      id: Number(result.lastInsertRowid),
+      roomId: input.roomId,
+      threadId: input.threadId,
+      message: input.message,
+      runAtMs: input.runAtMs,
+      createdAtMs
+    };
+  }
+
+  /** Lists pending schedules for a room. */
+  public listPendingScheduledMessagesByRoom(roomId: string): ScheduledMessageRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, room_id, thread_id, message, run_at_ms, created_at_ms
+         FROM scheduled_messages
+         WHERE room_id = ? AND status = 'pending'
+         ORDER BY run_at_ms ASC`
+      )
+      .all(roomId) as Array<{
+        id?: unknown;
+        room_id?: unknown;
+        thread_id?: unknown;
+        message?: unknown;
+        run_at_ms?: unknown;
+        created_at_ms?: unknown;
+      }>;
+
+    return rows
+      .map((row) => toScheduledMessageRecord(row))
+      .filter((row): row is ScheduledMessageRecord => row !== undefined);
+  }
+
+  /** Lists all pending schedules across rooms. */
+  public listAllPendingScheduledMessages(): ScheduledMessageRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, room_id, thread_id, message, run_at_ms, created_at_ms
+         FROM scheduled_messages
+         WHERE status = 'pending'
+         ORDER BY run_at_ms ASC`
+      )
+      .all() as Array<{
+        id?: unknown;
+        room_id?: unknown;
+        thread_id?: unknown;
+        message?: unknown;
+        run_at_ms?: unknown;
+        created_at_ms?: unknown;
+      }>;
+
+    return rows
+      .map((row) => toScheduledMessageRecord(row))
+      .filter((row): row is ScheduledMessageRecord => row !== undefined);
+  }
+
+  /** Marks a pending schedule as cancelled for the room and returns whether an item changed. */
+  public cancelScheduledMessage(roomId: string, id: number): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE scheduled_messages SET status = 'cancelled', last_error = NULL WHERE id = ? AND room_id = ? AND status = 'pending'"
+      )
+      .run(id, roomId);
+    return result.changes > 0;
+  }
+
+  /** Marks a schedule as completed after successful dispatch. */
+  public markScheduledMessageCompleted(id: number): void {
+    this.db.prepare("UPDATE scheduled_messages SET status = 'completed', last_error = NULL WHERE id = ?").run(id);
+  }
+
+  /** Marks a schedule as failed with an error string. */
+  public markScheduledMessageFailed(id: number, errorText: string): void {
+    this.db.prepare("UPDATE scheduled_messages SET status = 'failed', last_error = ? WHERE id = ?").run(errorText, id);
+  }
+
   /** Creates required schema objects if they don't already exist. */
   private initializeSchema(): void {
     this.db.exec(`
@@ -216,6 +321,18 @@ export class StateDatabase {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS scheduled_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        message TEXT NOT NULL,
+        run_at_ms INTEGER NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        last_error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_scheduled_messages_status_run_at
+        ON scheduled_messages (status, run_at_ms);
     `);
   }
 }
@@ -271,4 +388,33 @@ function readInteger(value: unknown): number | undefined {
   }
 
   return Math.trunc(value);
+}
+
+function toScheduledMessageRecord(row: {
+  id?: unknown;
+  room_id?: unknown;
+  thread_id?: unknown;
+  message?: unknown;
+  run_at_ms?: unknown;
+  created_at_ms?: unknown;
+}): ScheduledMessageRecord | undefined {
+  if (
+    typeof row.id !== "number"
+    || typeof row.room_id !== "string"
+    || typeof row.thread_id !== "string"
+    || typeof row.message !== "string"
+    || typeof row.run_at_ms !== "number"
+    || typeof row.created_at_ms !== "number"
+  ) {
+    return undefined;
+  }
+
+  return {
+    id: Math.trunc(row.id),
+    roomId: row.room_id,
+    threadId: row.thread_id,
+    message: row.message,
+    runAtMs: Math.trunc(row.run_at_ms),
+    createdAtMs: Math.trunc(row.created_at_ms)
+  };
 }
