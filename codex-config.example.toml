@@ -1,0 +1,15 @@
+model = "gpt-5.3-codex"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+
+[projects."/var/lib/slimebot/workspace"]
+trust_level = "trusted"
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120

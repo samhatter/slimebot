@@ -10,6 +10,7 @@ services:
     environment:
       HOME: /var/lib/slimebot/codex
       SLIMEBOT_CONFIG_PATH: /app/slimebot.yaml
+      NPM_CONFIG_CACHE: /var/lib/slimebot/workspace/.npm-cache
     env_file:
       - secrets.env
     volumes:
