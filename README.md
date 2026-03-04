@@ -17,6 +17,7 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
   - local file upload command for sending workspace media (`!upload`)
 - SQLite-backed state persistence (room routes + per-thread state).
 - SQLite-backed scheduled message queue with timer restore on startup.
+- Controller-owned Unix-socket HTTP API with capability discovery + event stream.
 - Startup restore flow that resumes persisted thread mappings when possible.
 - Turn handling:
   - `turn/steer` when a room sends a new message during an in-flight turn
@@ -76,12 +77,31 @@ Key sections:
 - `controller`
   - `commandPrefix` (currently parsed but not enforced by Matrix command parsing)
   - `stateDatabasePath`
+  - `apiSocketPath` (Unix socket for controller API)
 - `codex`
   - command and args used to launch app-server
 
 Default Codex launch is equivalent to:
 
 - `codex app-server --listen stdio://`
+
+## Controller API (Unix Socket)
+
+Slimebot exposes a controller-owned HTTP API over a Unix socket (default: `/var/lib/slimebot/workspace/slimebot-controller.sock`).
+
+Implemented routes:
+
+- `GET /health`
+- `GET /capabilities`
+- `GET /openapi.json`
+- `GET /events` (SSE stream)
+- `GET /schedules?roomId=<roomId>`
+- `POST /schedules`
+- `DELETE /schedules/{id}?roomId=<roomId>`
+- `POST /threads/{threadId}/message`
+- `POST /channels/matrix/upload`
+
+The `/openapi.json` document is included so an OpenAPI-to-MCP bridge can expose these routes as tools.
 
 ## Commands
 

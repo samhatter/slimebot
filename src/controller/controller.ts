@@ -37,6 +37,7 @@ import {
   shouldIgnoreCodexLogLine,
   stringifyJson
 } from "./controllerUtils.js";
+import { ControllerApiServer } from "./controllerApiServer.js";
 import { StateDatabase, type ScheduledMessageRecord } from "./stateDatabase.js";
 
 type PendingApprovalRequest = {
@@ -82,6 +83,7 @@ type ScheduledMessage = ScheduledMessageRecord & {
 export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
+  private readonly apiServer: ControllerApiServer;
   private readonly stateDatabase: StateDatabase;
   private readonly roomThreadRoutes = new Map<string, string>();
   private readonly threadStateByThreadId = new Map<string, ThreadState>();
@@ -101,6 +103,20 @@ export class BotController {
     this.channel = createChannel(appConfig.channel);
     this.stateDatabase = new StateDatabase(
       resolve(appConfig.controller.stateDatabasePath),
+      this.logInfo.bind(this),
+      this.logWarn.bind(this)
+    );
+    this.apiServer = new ControllerApiServer(
+      resolve(appConfig.controller.apiSocketPath),
+      {
+        listSchedules: (roomId?: string) => this.listSchedulesForApi(roomId),
+        createSchedule: (input) => this.createScheduleForApi(input),
+        cancelSchedule: (roomId: string, id: number) => this.cancelScheduleForApi(roomId, id),
+        sendThreadMessage: (input) => this.sendThreadMessageForApi(input),
+        uploadMatrixFile: (input) => this.uploadMatrixFileForApi(input),
+        getCapabilities: () => this.getApiCapabilities(),
+        getOpenApiSpec: () => this.getOpenApiSpec()
+      },
       this.logInfo.bind(this),
       this.logWarn.bind(this)
     );
@@ -131,6 +147,7 @@ export class BotController {
     await this.initializeCodexAppServer();
     await this.restoreRoomThreadRoutes();
     this.restoreScheduledMessages();
+    await this.apiServer.start();
 
     await this.channel.start();
     this.logInfo("Bot runner started");
@@ -140,6 +157,7 @@ export class BotController {
   private registerShutdownHandlers(): void {
     const shutdown = (): void => {
       this.clearAllScheduledMessageTimers();
+      void this.apiServer.stop();
       this.codexAppServer?.stop("SIGTERM");
     };
 
@@ -1295,6 +1313,10 @@ export class BotController {
       }
 
       this.clearScheduledMessageTimer(Math.trunc(id));
+      this.apiServer.emitEvent("schedule.cancelled", {
+        roomId,
+        id: Math.trunc(id)
+      });
       await this.channel.sendSystemMessage(roomId, `Cancelled schedule #${idArg}.`);
       return;
     }
@@ -1351,6 +1373,13 @@ export class BotController {
       runAtMs
     });
     this.registerScheduledMessage(scheduledMessage);
+    this.apiServer.emitEvent("schedule.created", {
+      id: scheduledMessage.id,
+      roomId,
+      threadId,
+      runAtMs,
+      message: messageText
+    });
 
     await this.channel.sendSystemMessage(
       roomId,
@@ -1387,6 +1416,12 @@ export class BotController {
         contentType,
         data,
         caption: caption || undefined
+      });
+      this.apiServer.emitEvent("matrix.uploaded", {
+        roomId,
+        filePath: absolutePath,
+        fileName,
+        contentType
       });
     } catch (error) {
       await this.channel.sendSystemMessage(roomId, `Failed to upload ${absolutePath}: ${String(error)}`);
@@ -1565,6 +1600,12 @@ export class BotController {
     if (!this.codexAppServer) {
       const errorText = "Codex app server is not configured.";
       this.stateDatabase.markScheduledMessageFailed(id, errorText);
+      this.apiServer.emitEvent("schedule.failed", {
+        id,
+        roomId: scheduledMessage.roomId,
+        threadId: scheduledMessage.threadId,
+        error: errorText
+      });
       await this.channel.sendSystemMessage(
         scheduledMessage.roomId,
         `Scheduled message #${String(id)} failed: ${errorText}`
@@ -1579,6 +1620,11 @@ export class BotController {
         `[Scheduled message]\n${scheduledMessage.message}`
       );
       this.stateDatabase.markScheduledMessageCompleted(id);
+      this.apiServer.emitEvent("schedule.delivered", {
+        id,
+        roomId: scheduledMessage.roomId,
+        threadId: scheduledMessage.threadId
+      });
       await this.channel.sendSystemMessage(
         scheduledMessage.roomId,
         `Delivered scheduled message #${String(id)}.`
@@ -1586,6 +1632,12 @@ export class BotController {
     } catch (error) {
       const errorText = String(error);
       this.stateDatabase.markScheduledMessageFailed(id, errorText);
+      this.apiServer.emitEvent("schedule.failed", {
+        id,
+        roomId: scheduledMessage.roomId,
+        threadId: scheduledMessage.threadId,
+        error: errorText
+      });
       await this.channel.sendSystemMessage(
         scheduledMessage.roomId,
         `Scheduled message #${String(id)} failed: ${errorText}`
@@ -1622,6 +1674,194 @@ export class BotController {
       default:
         return "application/octet-stream";
     }
+  }
+
+  /** Returns API capabilities exposed on the controller unix-socket server. */
+  private getApiCapabilities(): unknown {
+    return [
+      { method: "GET", path: "/health", description: "Healthcheck" },
+      { method: "GET", path: "/capabilities", description: "Capability discovery" },
+      { method: "GET", path: "/openapi.json", description: "OpenAPI spec for bridge tooling" },
+      { method: "GET", path: "/events", description: "SSE stream for controller events" },
+      { method: "GET", path: "/schedules?roomId=<id>", description: "List schedules (room optional)" },
+      { method: "POST", path: "/schedules", description: "Create schedule" },
+      { method: "DELETE", path: "/schedules/:id?roomId=<id>", description: "Cancel schedule" },
+      { method: "POST", path: "/threads/:threadId/message", description: "Send message to thread" },
+      { method: "POST", path: "/channels/matrix/upload", description: "Upload workspace file to matrix room" }
+    ];
+  }
+
+  /** Minimal OpenAPI document for MCP/OpenAPI bridges. */
+  private getOpenApiSpec(): unknown {
+    return {
+      openapi: "3.1.0",
+      info: {
+        title: "Slimebot Controller API",
+        version: "0.1.0"
+      },
+      paths: {
+        "/health": { get: { operationId: "health", responses: { "200": { description: "ok" } } } },
+        "/capabilities": { get: { operationId: "capabilities", responses: { "200": { description: "capabilities" } } } },
+        "/events": { get: { operationId: "events", responses: { "200": { description: "sse stream" } } } },
+        "/openapi.json": { get: { operationId: "openapi", responses: { "200": { description: "openapi spec" } } } },
+        "/schedules": {
+          get: { operationId: "listSchedules", responses: { "200": { description: "schedule list" } } },
+          post: { operationId: "createSchedule", responses: { "200": { description: "created" } } }
+        },
+        "/schedules/{id}": {
+          delete: {
+            operationId: "cancelSchedule",
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+            responses: { "200": { description: "cancelled" } }
+          }
+        },
+        "/threads/{threadId}/message": {
+          post: {
+            operationId: "sendThreadMessage",
+            parameters: [{ name: "threadId", in: "path", required: true, schema: { type: "string" } }],
+            responses: { "200": { description: "sent" } }
+          }
+        },
+        "/channels/matrix/upload": {
+          post: {
+            operationId: "uploadMatrixFile",
+            responses: { "200": { description: "uploaded" } }
+          }
+        }
+      }
+    };
+  }
+
+  /** API handler for listing schedules. */
+  private listSchedulesForApi(roomId?: string): unknown {
+    if (roomId?.trim()) {
+      return this.stateDatabase.listPendingScheduledMessagesByRoom(roomId.trim());
+    }
+
+    return this.stateDatabase.listAllPendingScheduledMessages();
+  }
+
+  /** API handler for creating schedules. */
+  private async createScheduleForApi(input: {
+    roomId: string;
+    message: string;
+    runAtMs?: number;
+    secondsFromNow?: number;
+    threadId?: string;
+  }): Promise<unknown> {
+    const roomId = input.roomId.trim();
+    if (!roomId) {
+      throw new Error("roomId is required.");
+    }
+
+    const message = input.message.trim();
+    if (!message) {
+      throw new Error("message is required.");
+    }
+
+    const threadId = input.threadId?.trim() || this.roomThreadRoutes.get(roomId);
+    if (!threadId) {
+      throw new Error(`No mapped thread for room ${roomId}.`);
+    }
+
+    let runAtMs = input.runAtMs;
+    if (!Number.isFinite(runAtMs) && Number.isFinite(input.secondsFromNow)) {
+      runAtMs = Date.now() + Math.trunc((input.secondsFromNow as number) * 1000);
+    }
+
+    if (!Number.isFinite(runAtMs)) {
+      throw new Error("Either runAtMs or secondsFromNow is required.");
+    }
+
+    const normalizedRunAtMs = Math.trunc(runAtMs as number);
+    if (normalizedRunAtMs <= Date.now()) {
+      throw new Error("Scheduled time must be in the future.");
+    }
+
+    const scheduledMessage = this.stateDatabase.createScheduledMessage({
+      roomId,
+      threadId,
+      message,
+      runAtMs: normalizedRunAtMs
+    });
+    this.registerScheduledMessage(scheduledMessage);
+    this.apiServer.emitEvent("schedule.created", {
+      id: scheduledMessage.id,
+      roomId,
+      threadId,
+      runAtMs: normalizedRunAtMs
+    });
+
+    return scheduledMessage;
+  }
+
+  /** API handler for cancelling schedules. */
+  private async cancelScheduleForApi(roomId: string, id: number): Promise<unknown> {
+    const normalizedRoomId = roomId.trim();
+    if (!normalizedRoomId) {
+      throw new Error("roomId is required.");
+    }
+    if (!Number.isFinite(id) || id <= 0) {
+      throw new Error("id must be a positive integer.");
+    }
+
+    const normalizedId = Math.trunc(id);
+    const cancelled = this.stateDatabase.cancelScheduledMessage(normalizedRoomId, normalizedId);
+    if (!cancelled) {
+      return { cancelled: false, id: normalizedId };
+    }
+
+    this.clearScheduledMessageTimer(normalizedId);
+    this.apiServer.emitEvent("schedule.cancelled", {
+      roomId: normalizedRoomId,
+      id: normalizedId
+    });
+    return { cancelled: true, id: normalizedId };
+  }
+
+  /** API handler for posting messages to a thread. */
+  private async sendThreadMessageForApi(input: { roomId: string; threadId: string; message: string }): Promise<unknown> {
+    if (!input.roomId.trim() || !input.threadId.trim() || !input.message.trim()) {
+      throw new Error("roomId, threadId, and message are required.");
+    }
+    await this.sendUserMessageToThread(input.roomId.trim(), input.threadId.trim(), input.message.trim());
+    return { sent: true };
+  }
+
+  /** API handler for Matrix file uploads from local workspace files. */
+  private async uploadMatrixFileForApi(input: { roomId: string; filePath: string; caption?: string }): Promise<unknown> {
+    const roomId = input.roomId.trim();
+    const filePath = input.filePath.trim();
+    if (!roomId || !filePath) {
+      throw new Error("roomId and filePath are required.");
+    }
+
+    const workspaceRoot = "/var/lib/slimebot/workspace";
+    const absolutePath = filePath.startsWith("/")
+      ? resolve(filePath)
+      : resolve(workspaceRoot, filePath);
+
+    if (!absolutePath.startsWith(`${workspaceRoot}/`) && absolutePath !== workspaceRoot) {
+      throw new Error(`Upload path must be inside ${workspaceRoot}.`);
+    }
+
+    const data = await readFile(absolutePath);
+    const fileName = basename(absolutePath);
+    const contentType = this.getMimeTypeFromPath(absolutePath);
+    await this.channel.sendUploadedFile(roomId, {
+      filePath: absolutePath,
+      fileName,
+      contentType,
+      data,
+      caption: input.caption?.trim() || undefined
+    });
+    this.apiServer.emitEvent("matrix.uploaded", {
+      roomId,
+      filePath: absolutePath,
+      fileName,
+      contentType
+    });
+    return { uploaded: true, filePath: absolutePath, fileName, contentType };
   }
 
   /** Resolves a command thread id argument or falls back to the room mapping. */
