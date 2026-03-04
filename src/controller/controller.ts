@@ -84,6 +84,8 @@ export class BotController {
   private readonly channel: Channel;
   private readonly codexAppServer?: CodexAppServerProcess;
   private readonly mcpSocketServer: ControllerMcpSocketServer;
+  private readonly codexThreadStartDefaults: Record<string, unknown>;
+  private readonly codexTurnStartDefaults: Record<string, unknown>;
   private readonly stateDatabase: StateDatabase;
   private readonly roomThreadRoutes = new Map<string, string>();
   private readonly threadStateByThreadId = new Map<string, ThreadState>();
@@ -100,6 +102,8 @@ export class BotController {
    * Creates a controller with channel + optional Codex process wiring.
    */
   public constructor(appConfig: AppConfig) {
+    this.codexThreadStartDefaults = { ...appConfig.codex.threadStart };
+    this.codexTurnStartDefaults = { ...appConfig.codex.turnStart };
     this.channel = createChannel(appConfig.channel);
     this.stateDatabase = new StateDatabase(
       resolve(appConfig.controller.stateDatabasePath),
@@ -533,6 +537,7 @@ export class BotController {
 
     try {
       const turnStartParams: Record<string, unknown> = {
+        ...this.createTurnStartDefaults(),
         threadId,
         input: [
           {
@@ -778,7 +783,7 @@ export class BotController {
     }
 
     try {
-      const result = await this.codexAppServer.threadStart({});
+      const result = await this.codexAppServer.threadStart(this.createThreadStartDefaults());
       const threadId = asRecord(asRecord(result)?.["thread"])?.["id"];
       if (!threadId) {
         await this.channel.sendSystemMessage(roomId, `Thread was created but no thread id was returned:\n${stringifyJson(result)}`);
@@ -804,6 +809,25 @@ export class BotController {
       await this.channel.sendSystemMessage(roomId, `Failed to create a new thread: ${String(error)}`);
       this.logWarn(`Failed to create a new thread for room ${roomId}: ${String(error)}`);
     }
+  }
+
+  /** Creates sanitized thread/start defaults from config without reserved fields. */
+  private createThreadStartDefaults(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      ...this.codexThreadStartDefaults
+    };
+    delete params["threadId"];
+    return params;
+  }
+
+  /** Creates sanitized turn/start defaults from config without reserved fields. */
+  private createTurnStartDefaults(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      ...this.codexTurnStartDefaults
+    };
+    delete params["threadId"];
+    delete params["input"];
+    return params;
   }
 
   /** Resumes an existing thread and maps it to the current room. */

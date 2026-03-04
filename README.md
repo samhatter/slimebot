@@ -79,10 +79,33 @@ Key sections:
   - `mcpSocketPath` (Unix socket for controller MCP server)
 - `codex`
   - command and args used to launch app-server
+  - optional `threadStart` defaults forwarded to `thread/start` (for example `personality`, `developerInstructions`, `baseInstructions`, `config`)
+  - optional `turnStart` defaults forwarded to `turn/start` (reserved keys `threadId` and `input` are ignored)
 
 Default Codex launch is equivalent to:
 
 - `codex app-server --listen stdio://`
+
+Example override to de-emphasize generic Codex persona:
+
+```yaml
+codex:
+  command: "/app/node_modules/.bin/codex"
+  cwd: "/var/lib/slimebot/workspace"
+  args: ["app-server", "--listen", "stdio://"]
+  threadStart:
+    personality: "none"
+    developerInstructions: |
+      You are Slimebot, a persistent workspace agent.
+      Prefer concise, practical responses.
+  turnStart:
+    personality: "none"
+```
+
+Notes:
+
+- `threadStart` applies when creating threads with `!new`.
+- `turnStart` applies to each new turn started by room messages.
 
 ## Controller MCP Server (Unix Socket)
 

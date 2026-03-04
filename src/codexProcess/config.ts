@@ -4,6 +4,7 @@
 
 import {
   asRecord,
+  optionalRecord,
   optionalString,
   readStringArray,
   type JsonRecord
@@ -14,6 +15,8 @@ export type CodexAppServerConfig = {
   command: string;
   args: string[];
   options: CodexAppServerProcessOptions;
+  threadStart: JsonRecord;
+  turnStart: JsonRecord;
 };
 
 /** Parses Codex process config from root app config with defaults. */
@@ -25,6 +28,8 @@ export function parseCodexAppServerConfig(root: JsonRecord): CodexAppServerConfi
     args: readStringArray(codexRecord, "args", ["app-server", "--listen", "stdio://"]),
     options: {
       cwd: optionalString(codexRecord, "cwd") ?? "/var/lib/slimebot/workspace"
-    }
+    },
+    threadStart: optionalRecord(codexRecord, "threadStart") ?? {},
+    turnStart: optionalRecord(codexRecord, "turnStart") ?? {}
   };
 }
