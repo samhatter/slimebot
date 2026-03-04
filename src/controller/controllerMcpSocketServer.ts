@@ -15,8 +15,12 @@ type McpHandlers = {
   createSchedule: (input: {
     roomId: string;
     message: string;
-    runAtMs?: number;
-    secondsFromNow?: number;
+    spec: {
+      version: "v1";
+      timezone: string;
+      dtstart: string;
+      rrule: string;
+    };
     threadId?: string;
   }) => Promise<unknown>;
   cancelSchedule: (roomId: string, id: number) => Promise<unknown>;
@@ -212,7 +216,7 @@ export class ControllerMcpSocketServer {
       "schedule_list",
       {
         title: "List Schedules",
-        description: "List pending schedules, optionally scoped to a room.",
+        description: "List active schedules, optionally scoped to a room.",
         inputSchema: {
           roomId: z.string().optional()
         }
@@ -224,12 +228,16 @@ export class ControllerMcpSocketServer {
       "schedule_create",
       {
         title: "Create Schedule",
-        description: "Create a pending schedule in a room (and optionally specific thread).",
+        description: "Create a schedule in a room using a unified schedule spec.",
         inputSchema: {
           roomId: z.string(),
           message: z.string(),
-          runAtMs: z.number().optional(),
-          secondsFromNow: z.number().optional(),
+          spec: z.object({
+            version: z.literal("v1"),
+            timezone: z.string(),
+            dtstart: z.string(),
+            rrule: z.string()
+          }),
           threadId: z.string().optional()
         }
       },

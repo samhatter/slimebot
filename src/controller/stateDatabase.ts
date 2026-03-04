@@ -5,6 +5,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { normalizeScheduleSpec, type ScheduleSpec } from "./scheduleSpec.js";
 
 type ReasoningEffort = "low" | "medium" | "high";
 
@@ -32,13 +33,24 @@ export type PersistedStatePayload = {
   toolActivityMessagesEnabled?: boolean;
 };
 
-export type ScheduledMessageRecord = {
+type ScheduleJobStatus = "active" | "cancelled" | "completed";
+
+export type ScheduleJobRecord = {
   id: number;
   roomId: string;
   threadId: string;
   message: string;
-  runAtMs: number;
+  spec: ScheduleSpec;
+  nextRunAtMs?: number;
   createdAtMs: number;
+  lastRunAtMs?: number;
+  status: ScheduleJobStatus;
+  lastError?: string;
+};
+
+export type ActiveScheduleJobRecord = ScheduleJobRecord & {
+  status: "active";
+  nextRunAtMs: number;
 };
 
 /** Encapsulates all SQLite state persistence operations. */
@@ -204,100 +216,216 @@ export class StateDatabase {
     }
   }
 
-  /** Creates a new scheduled room/thread message. */
-  public createScheduledMessage(input: {
+  /** Creates a new schedule job from a unified schedule spec. */
+  public createScheduleJob(input: {
     roomId: string;
     threadId: string;
     message: string;
-    runAtMs: number;
-  }): ScheduledMessageRecord {
+    spec: ScheduleSpec;
+    nextRunAtMs: number;
+  }): ActiveScheduleJobRecord {
     const createdAtMs = Date.now();
     const result = this.db
       .prepare(
-        `INSERT INTO scheduled_messages (
+        `INSERT INTO schedule_jobs (
           room_id,
           thread_id,
           message,
-          run_at_ms,
+          spec_json,
+          next_run_at_ms,
           created_at_ms,
           status
-        ) VALUES (?, ?, ?, ?, ?, 'pending')`
+        ) VALUES (?, ?, ?, ?, ?, ?, 'active')`
       )
-      .run(input.roomId, input.threadId, input.message, input.runAtMs, createdAtMs);
+      .run(
+        input.roomId,
+        input.threadId,
+        input.message,
+        JSON.stringify(input.spec),
+        input.nextRunAtMs,
+        createdAtMs
+      );
+
     return {
       id: Number(result.lastInsertRowid),
       roomId: input.roomId,
       threadId: input.threadId,
       message: input.message,
-      runAtMs: input.runAtMs,
-      createdAtMs
+      spec: input.spec,
+      nextRunAtMs: input.nextRunAtMs,
+      createdAtMs,
+      status: "active"
     };
   }
 
-  /** Lists pending schedules for a room. */
-  public listPendingScheduledMessagesByRoom(roomId: string): ScheduledMessageRecord[] {
+  /** Lists active schedule jobs for a room. */
+  public listActiveScheduleJobsByRoom(roomId: string): ActiveScheduleJobRecord[] {
     const rows = this.db
       .prepare(
-        `SELECT id, room_id, thread_id, message, run_at_ms, created_at_ms
-         FROM scheduled_messages
-         WHERE room_id = ? AND status = 'pending'
-         ORDER BY run_at_ms ASC`
+        `SELECT
+          id,
+          room_id,
+          thread_id,
+          message,
+          spec_json,
+          next_run_at_ms,
+          created_at_ms,
+          last_run_at_ms,
+          status,
+          last_error
+         FROM schedule_jobs
+         WHERE room_id = ? AND status = 'active'
+         ORDER BY next_run_at_ms ASC`
       )
       .all(roomId) as Array<{
         id?: unknown;
         room_id?: unknown;
         thread_id?: unknown;
         message?: unknown;
-        run_at_ms?: unknown;
+        spec_json?: unknown;
+        next_run_at_ms?: unknown;
         created_at_ms?: unknown;
+        last_run_at_ms?: unknown;
+        status?: unknown;
+        last_error?: unknown;
       }>;
 
     return rows
-      .map((row) => toScheduledMessageRecord(row))
-      .filter((row): row is ScheduledMessageRecord => row !== undefined);
+      .map((row) => toActiveScheduleJobRecord(row))
+      .filter((row): row is ActiveScheduleJobRecord => row !== undefined);
   }
 
-  /** Lists all pending schedules across rooms. */
-  public listAllPendingScheduledMessages(): ScheduledMessageRecord[] {
+  /** Lists all active schedule jobs. */
+  public listAllActiveScheduleJobs(): ActiveScheduleJobRecord[] {
     const rows = this.db
       .prepare(
-        `SELECT id, room_id, thread_id, message, run_at_ms, created_at_ms
-         FROM scheduled_messages
-         WHERE status = 'pending'
-         ORDER BY run_at_ms ASC`
+        `SELECT
+          id,
+          room_id,
+          thread_id,
+          message,
+          spec_json,
+          next_run_at_ms,
+          created_at_ms,
+          last_run_at_ms,
+          status,
+          last_error
+         FROM schedule_jobs
+         WHERE status = 'active'
+         ORDER BY next_run_at_ms ASC`
       )
       .all() as Array<{
         id?: unknown;
         room_id?: unknown;
         thread_id?: unknown;
         message?: unknown;
-        run_at_ms?: unknown;
+        spec_json?: unknown;
+        next_run_at_ms?: unknown;
         created_at_ms?: unknown;
+        last_run_at_ms?: unknown;
+        status?: unknown;
+        last_error?: unknown;
       }>;
 
     return rows
-      .map((row) => toScheduledMessageRecord(row))
-      .filter((row): row is ScheduledMessageRecord => row !== undefined);
+      .map((row) => toActiveScheduleJobRecord(row))
+      .filter((row): row is ActiveScheduleJobRecord => row !== undefined);
   }
 
-  /** Marks a pending schedule as cancelled for the room and returns whether an item changed. */
-  public cancelScheduledMessage(roomId: string, id: number): boolean {
+  /** Cancels an active schedule job in the room. */
+  public cancelScheduleJob(roomId: string, id: number): boolean {
     const result = this.db
       .prepare(
-        "UPDATE scheduled_messages SET status = 'cancelled', last_error = NULL WHERE id = ? AND room_id = ? AND status = 'pending'"
+        `UPDATE schedule_jobs
+         SET status = 'cancelled', next_run_at_ms = NULL
+         WHERE id = ? AND room_id = ? AND status = 'active'`
       )
       .run(id, roomId);
     return result.changes > 0;
   }
 
-  /** Marks a schedule as completed after successful dispatch. */
-  public markScheduledMessageCompleted(id: number): void {
-    this.db.prepare("UPDATE scheduled_messages SET status = 'completed', last_error = NULL WHERE id = ?").run(id);
+  /**
+   * Advances a schedule job after one run attempt.
+   *
+   * If `nextRunAtMs` is provided, job remains active and the updated record is returned.
+   * If not, job is marked completed and undefined is returned.
+   */
+  public advanceScheduleJobAfterRun(input: {
+    id: number;
+    lastRunAtMs: number;
+    nextRunAtMs?: number;
+    lastError?: string;
+  }): ActiveScheduleJobRecord | undefined {
+    if (Number.isFinite(input.nextRunAtMs)) {
+      this.db
+        .prepare(
+          `UPDATE schedule_jobs
+           SET
+             status = 'active',
+             next_run_at_ms = ?,
+             last_run_at_ms = ?,
+             last_error = ?
+           WHERE id = ?`
+        )
+        .run(
+          Math.trunc(input.nextRunAtMs as number),
+          Math.trunc(input.lastRunAtMs),
+          input.lastError ?? null,
+          input.id
+        );
+      return this.readActiveScheduleJobById(input.id);
+    }
+
+    this.db
+      .prepare(
+        `UPDATE schedule_jobs
+         SET
+           status = 'completed',
+           next_run_at_ms = NULL,
+           last_run_at_ms = ?,
+           last_error = ?
+         WHERE id = ?`
+    )
+      .run(Math.trunc(input.lastRunAtMs), input.lastError ?? null, input.id);
+    return undefined;
   }
 
-  /** Marks a schedule as failed with an error string. */
-  public markScheduledMessageFailed(id: number, errorText: string): void {
-    this.db.prepare("UPDATE scheduled_messages SET status = 'failed', last_error = ? WHERE id = ?").run(errorText, id);
+  /** Reads a single active schedule job by id. */
+  private readActiveScheduleJobById(id: number): ActiveScheduleJobRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT
+          id,
+          room_id,
+          thread_id,
+          message,
+          spec_json,
+          next_run_at_ms,
+          created_at_ms,
+          last_run_at_ms,
+          status,
+          last_error
+         FROM schedule_jobs
+         WHERE id = ? AND status = 'active'
+         LIMIT 1`
+      )
+      .get(id) as {
+        id?: unknown;
+        room_id?: unknown;
+        thread_id?: unknown;
+        message?: unknown;
+        spec_json?: unknown;
+        next_run_at_ms?: unknown;
+        created_at_ms?: unknown;
+        last_run_at_ms?: unknown;
+        status?: unknown;
+        last_error?: unknown;
+      } | undefined;
+    if (!row) {
+      return undefined;
+    }
+
+    return toActiveScheduleJobRecord(row);
   }
 
   /** Creates required schema objects if they don't already exist. */
@@ -321,18 +449,20 @@ export class StateDatabase {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS scheduled_messages (
+      CREATE TABLE IF NOT EXISTS schedule_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_id TEXT NOT NULL,
         thread_id TEXT NOT NULL,
         message TEXT NOT NULL,
-        run_at_ms INTEGER NOT NULL,
+        spec_json TEXT NOT NULL,
+        next_run_at_ms INTEGER,
         created_at_ms INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
+        last_run_at_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'active',
         last_error TEXT
       );
-      CREATE INDEX IF NOT EXISTS idx_scheduled_messages_status_run_at
-        ON scheduled_messages (status, run_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_schedule_jobs_status_next_run_at
+        ON schedule_jobs (status, next_run_at_ms);
     `);
   }
 }
@@ -390,22 +520,41 @@ function readInteger(value: unknown): number | undefined {
   return Math.trunc(value);
 }
 
-function toScheduledMessageRecord(row: {
+function toActiveScheduleJobRecord(row: {
   id?: unknown;
   room_id?: unknown;
   thread_id?: unknown;
   message?: unknown;
-  run_at_ms?: unknown;
+  spec_json?: unknown;
+  next_run_at_ms?: unknown;
   created_at_ms?: unknown;
-}): ScheduledMessageRecord | undefined {
+  last_run_at_ms?: unknown;
+  status?: unknown;
+  last_error?: unknown;
+}): ActiveScheduleJobRecord | undefined {
   if (
     typeof row.id !== "number"
     || typeof row.room_id !== "string"
     || typeof row.thread_id !== "string"
     || typeof row.message !== "string"
-    || typeof row.run_at_ms !== "number"
+    || typeof row.spec_json !== "string"
+    || typeof row.next_run_at_ms !== "number"
     || typeof row.created_at_ms !== "number"
+    || row.status !== "active"
   ) {
+    return undefined;
+  }
+
+  let spec: ScheduleSpec;
+  try {
+    const parsedSpec = JSON.parse(row.spec_json) as {
+      version: string;
+      timezone: string;
+      dtstart: string;
+      rrule: string;
+    };
+    spec = normalizeScheduleSpec(parsedSpec);
+  } catch {
     return undefined;
   }
 
@@ -414,7 +563,11 @@ function toScheduledMessageRecord(row: {
     roomId: row.room_id,
     threadId: row.thread_id,
     message: row.message,
-    runAtMs: Math.trunc(row.run_at_ms),
-    createdAtMs: Math.trunc(row.created_at_ms)
+    spec,
+    nextRunAtMs: Math.trunc(row.next_run_at_ms),
+    createdAtMs: Math.trunc(row.created_at_ms),
+    lastRunAtMs: typeof row.last_run_at_ms === "number" ? Math.trunc(row.last_run_at_ms) : undefined,
+    status: "active",
+    lastError: typeof row.last_error === "string" ? row.last_error : undefined
   };
 }

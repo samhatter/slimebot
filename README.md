@@ -15,7 +15,7 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
   - rate-limit aware send retries (`M_LIMIT_EXCEEDED`)
   - command parsing with canonical names + aliases
 - SQLite-backed state persistence (room routes + per-thread state).
-- SQLite-backed scheduled message queue with timer restore on startup.
+- SQLite-backed unified schedule job queue (RRULE-based) with timer restore on startup.
 - Controller-owned MCP server over a Unix domain socket.
 - Startup restore flow that resumes persisted thread mappings when possible.
 - Turn handling:
@@ -97,6 +97,13 @@ Exposed tools are composed from:
 - channel-provided tools:
   - Matrix channel currently registers `matrix_upload_file`
 
+`schedule_create` expects one unified schedule spec shape:
+
+- `spec.version`: `"v1"`
+- `spec.timezone`: IANA timezone (for example `America/New_York`)
+- `spec.dtstart`: ISO-8601 timestamp
+- `spec.rrule`: RFC5545 RRULE (for example `FREQ=WEEKLY;BYDAY=MO,WE,FR`)
+
 ## Codex MCP Bridge
 
 This repo also includes a thin stdio bridge for Codex that forwards bytes between stdio and the controller MCP socket:
@@ -134,10 +141,15 @@ General:
 - `!account ratelimits` — show latest received `account/rateLimits/updated` payload
 - `!reasoning [default|low|medium|high] [threadId]` — show or set per-thread reasoning effort
 - `!verbosity [on|off]` — show or set global tool activity message verbosity (approvals unaffected)
-- `!schedule add <secondsFromNow> <message>` — schedule message delivery to mapped thread
-- `!schedule at <ISO-8601> <message>` — schedule message delivery at absolute time
-- `!schedule list` — list pending schedules for this room
-- `!schedule cancel <id>` — cancel pending schedule in this room
+- `!schedule create <timezone> <ISO-8601-dtstart> <RRULE> <message>` — create schedule from unified spec
+- `!schedule once <ISO-8601> <message>` — create one-shot schedule convenience wrapper
+- `!schedule list` — list active schedules for this room
+- `!schedule cancel <id>` — cancel an active schedule in this room
+
+Examples:
+
+- `!schedule once 2026-03-10T14:00:00Z review PR queue`
+- `!schedule create America/New_York 2026-03-10T09:00:00-05:00 FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR daily standup reminder`
 
 Thread operations:
 

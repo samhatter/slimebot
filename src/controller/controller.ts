@@ -37,7 +37,8 @@ import {
   stringifyJson
 } from "./controllerUtils.js";
 import { ControllerMcpSocketServer } from "./controllerMcpSocketServer.js";
-import { StateDatabase, type ScheduledMessageRecord } from "./stateDatabase.js";
+import { StateDatabase, type ActiveScheduleJobRecord, type ScheduleJobRecord } from "./stateDatabase.js";
+import { computeNextScheduleRunAtMs, normalizeScheduleSpec, type ScheduleSpec } from "./scheduleSpec.js";
 
 type PendingApprovalRequest = {
   requestId: number | string;
@@ -75,7 +76,7 @@ type ThreadState = {
   tokenUsage?: ThreadTokenUsage;
 };
 
-type ScheduledMessage = ScheduledMessageRecord & {
+type ScheduledJob = ScheduleJobRecord & {
   timeout?: NodeJS.Timeout;
 };
 
@@ -89,7 +90,7 @@ export class BotController {
   private readonly pendingToolActivityByKey = new Map<string, PendingToolActivity>();
   private readonly pendingApprovalByRoomId = new Map<string, PendingApprovalRequest>();
   private readonly pendingApprovalRoomByRequestId = new Map<string, string>();
-  private readonly scheduledMessagesById = new Map<number, ScheduledMessage>();
+  private readonly scheduledJobsById = new Map<number, ScheduledJob>();
   private toolActivityMessagesEnabled = true;
   private latestAccountRateLimits?: unknown;
   private loginRoomId?: string;
@@ -760,10 +761,10 @@ export class BotController {
       "- !account [ratelimits]: Show account information or latest rate limits",
       "- !reasoning [default|low|medium|high] [threadId]: Show or set reasoning per thread (!r)",
       "- !verbosity [on|off]: Show or set tool activity message verbosity (!v)",
-      "- !schedule add <secondsFromNow> <message>: Schedule a message to the mapped thread",
-      "- !schedule at <ISO-8601> <message>: Schedule a message at absolute time (UTC recommended)",
-      "- !schedule list: List pending schedules for this room",
-      "- !schedule cancel <id>: Cancel a pending schedule in this room"
+      "- !schedule create <timezone> <ISO-8601-dtstart> <RRULE> <message>: Create a recurring (or one-shot) schedule",
+      "- !schedule once <ISO-8601> <message>: Convenience one-shot schedule (UTC rule wrapper)",
+      "- !schedule list: List active schedules for this room",
+      "- !schedule cancel <id>: Cancel an active schedule in this room"
     ];
 
     await this.channel.sendHelp(roomId, lines);
@@ -1264,29 +1265,29 @@ export class BotController {
     );
   }
 
-  /** Creates, lists, and cancels scheduled prompts for the mapped thread in this room. */
+  /** Creates, lists, and cancels schedule jobs for the mapped thread in this room. */
   private async handleScheduleCommand(roomId: string, command: ControllerCommand): Promise<void> {
     const subcommand = command.args[0]?.trim().toLowerCase();
     if (!subcommand) {
       await this.channel.sendSystemMessage(
         roomId,
-        "Usage: !schedule <add|at|list|cancel> ..."
+        "Usage: !schedule <create|once|list|cancel> ..."
       );
       return;
     }
 
     if (subcommand === "list") {
-      const pendingSchedules = this.stateDatabase.listPendingScheduledMessagesByRoom(roomId);
-      if (pendingSchedules.length === 0) {
-        await this.channel.sendSystemMessage(roomId, "No pending schedules for this room.");
+      const activeJobs = this.stateDatabase.listActiveScheduleJobsByRoom(roomId);
+      if (activeJobs.length === 0) {
+        await this.channel.sendSystemMessage(roomId, "No active schedules for this room.");
         return;
       }
 
-      const lines = pendingSchedules.map((scheduledMessage) => {
-        const runAtIso = new Date(scheduledMessage.runAtMs).toISOString();
-        return `#${String(scheduledMessage.id)} at ${runAtIso} -> ${scheduledMessage.message}`;
+      const lines = activeJobs.map((scheduleJob) => {
+        const runAtIso = new Date(scheduleJob.nextRunAtMs).toISOString();
+        return `#${String(scheduleJob.id)} next ${runAtIso} [${scheduleJob.spec.timezone}] ${scheduleJob.spec.rrule} -> ${scheduleJob.message}`;
       });
-      await this.channel.sendSystemMessage(roomId, `Pending schedules:\n${lines.join("\n")}`);
+      await this.channel.sendSystemMessage(roomId, `Active schedules:\n${lines.join("\n")}`);
       return;
     }
 
@@ -1298,19 +1299,19 @@ export class BotController {
         return;
       }
 
-      const wasCancelled = this.stateDatabase.cancelScheduledMessage(roomId, Math.trunc(id));
+      const wasCancelled = this.stateDatabase.cancelScheduleJob(roomId, Math.trunc(id));
       if (!wasCancelled) {
-        await this.channel.sendSystemMessage(roomId, `No pending schedule ${idArg} found for this room.`);
+        await this.channel.sendSystemMessage(roomId, `No active schedule ${idArg} found for this room.`);
         return;
       }
 
-      this.clearScheduledMessageTimer(Math.trunc(id));
+      this.clearScheduledJobTimer(Math.trunc(id));
       await this.channel.sendSystemMessage(roomId, `Cancelled schedule #${idArg}.`);
       return;
     }
 
-    if (subcommand !== "add" && subcommand !== "at") {
-      await this.channel.sendSystemMessage(roomId, "Usage: !schedule <add|at|list|cancel> ...");
+    if (subcommand !== "create" && subcommand !== "once") {
+      await this.channel.sendSystemMessage(roomId, "Usage: !schedule <create|once|list|cancel> ...");
       return;
     }
 
@@ -1320,52 +1321,58 @@ export class BotController {
       return;
     }
 
-    const whenArg = command.args[1]?.trim();
-    const messageText = command.args.slice(2).join(" ").trim();
-    if (!whenArg || !messageText) {
+    try {
+      let spec: ScheduleSpec;
+      let messageText: string;
+      if (subcommand === "once") {
+        const dtstart = command.args[1]?.trim();
+        messageText = command.args.slice(2).join(" ").trim();
+        if (!dtstart || !messageText) {
+          await this.channel.sendSystemMessage(roomId, "Usage: !schedule once <ISO-8601> <message>");
+          return;
+        }
+
+        spec = normalizeScheduleSpec({
+          version: "v1",
+          timezone: "UTC",
+          dtstart,
+          rrule: "FREQ=DAILY;COUNT=1"
+        });
+      } else {
+        const timezone = command.args[1]?.trim();
+        const dtstart = command.args[2]?.trim();
+        const rrule = command.args[3]?.trim();
+        messageText = command.args.slice(4).join(" ").trim();
+        if (!timezone || !dtstart || !rrule || !messageText) {
+          await this.channel.sendSystemMessage(
+            roomId,
+            "Usage: !schedule create <timezone> <ISO-8601-dtstart> <RRULE> <message>"
+          );
+          return;
+        }
+
+        spec = normalizeScheduleSpec({
+          version: "v1",
+          timezone,
+          dtstart,
+          rrule
+        });
+      }
+
+      const scheduleJob = this.createScheduleJobForRoom({
+        roomId,
+        threadId,
+        message: messageText,
+        spec
+      });
+
       await this.channel.sendSystemMessage(
         roomId,
-        subcommand === "add"
-          ? "Usage: !schedule add <secondsFromNow> <message>"
-          : "Usage: !schedule at <ISO-8601> <message>"
+        `Scheduled #${String(scheduleJob.id)} next at ${new Date(scheduleJob.nextRunAtMs).toISOString()} [${scheduleJob.spec.timezone}] ${scheduleJob.spec.rrule}.`
       );
-      return;
+    } catch (error) {
+      await this.channel.sendSystemMessage(roomId, `Failed to create schedule: ${String(error)}`);
     }
-
-    let runAtMs: number;
-    if (subcommand === "add") {
-      const secondsFromNow = Number(whenArg);
-      if (!Number.isFinite(secondsFromNow) || secondsFromNow < 1) {
-        await this.channel.sendSystemMessage(roomId, "For !schedule add, secondsFromNow must be a positive number.");
-        return;
-      }
-      runAtMs = Date.now() + Math.trunc(secondsFromNow * 1000);
-    } else {
-      const parsedMs = Date.parse(whenArg);
-      if (!Number.isFinite(parsedMs)) {
-        await this.channel.sendSystemMessage(roomId, "Invalid ISO-8601 timestamp. Example: 2026-03-05T12:30:00Z");
-        return;
-      }
-      runAtMs = Math.trunc(parsedMs);
-    }
-
-    if (runAtMs <= Date.now()) {
-      await this.channel.sendSystemMessage(roomId, "Scheduled time must be in the future.");
-      return;
-    }
-
-    const scheduledMessage = this.stateDatabase.createScheduledMessage({
-      roomId,
-      threadId,
-      message: messageText,
-      runAtMs
-    });
-    this.registerScheduledMessage(scheduledMessage);
-
-    await this.channel.sendSystemMessage(
-      roomId,
-      `Scheduled #${String(scheduledMessage.id)} for ${new Date(runAtMs).toISOString()}.`
-    );
   }
 
   /** Starts the ChatGPT login flow and stores callback context for completion. */
@@ -1483,65 +1490,98 @@ export class BotController {
     }
   }
 
-  /** Restores pending scheduled messages from SQLite and re-arms local timers. */
-  private restoreScheduledMessages(): void {
-    const pendingSchedules = this.stateDatabase.listAllPendingScheduledMessages();
-    for (const pendingSchedule of pendingSchedules) {
-      this.registerScheduledMessage(pendingSchedule);
+  /** Creates and arms a schedule job from a validated schedule spec. */
+  private createScheduleJobForRoom(input: {
+    roomId: string;
+    threadId: string;
+    message: string;
+    spec: ScheduleSpec;
+  }): ActiveScheduleJobRecord {
+    const nextRunAtMs = computeNextScheduleRunAtMs(input.spec, Date.now());
+    if (!Number.isFinite(nextRunAtMs)) {
+      throw new Error("Schedule has no future occurrences.");
     }
-    this.logInfo(`Restored ${String(pendingSchedules.length)} pending schedule(s).`);
+
+    const scheduleJob = this.stateDatabase.createScheduleJob({
+      roomId: input.roomId,
+      threadId: input.threadId,
+      message: input.message,
+      spec: input.spec,
+      nextRunAtMs: Math.trunc(nextRunAtMs as number)
+    });
+    this.registerScheduledJob(scheduleJob);
+    return scheduleJob;
   }
 
-  /** Registers a scheduled message and arms its timeout. */
-  private registerScheduledMessage(scheduledMessage: ScheduledMessageRecord): void {
-    this.clearScheduledMessageTimer(scheduledMessage.id);
+  /** Restores active schedule jobs from SQLite and re-arms local timers. */
+  private restoreScheduledMessages(): void {
+    const activeJobs = this.stateDatabase.listAllActiveScheduleJobs();
+    for (const activeJob of activeJobs) {
+      this.registerScheduledJob(activeJob);
+    }
+    this.logInfo(`Restored ${String(activeJobs.length)} active schedule(s).`);
+  }
 
-    const delayMs = Math.max(0, scheduledMessage.runAtMs - Date.now());
+  /** Registers a schedule job and arms its next timeout. */
+  private registerScheduledJob(scheduleJob: ActiveScheduleJobRecord): void {
+    this.clearScheduledJobTimer(scheduleJob.id);
+
+    const delayMs = Math.max(0, scheduleJob.nextRunAtMs - Date.now());
     const timeout = setTimeout(() => {
-      void this.executeScheduledMessage(scheduledMessage.id);
+      void this.executeScheduledJob(scheduleJob.id);
     }, delayMs);
 
-    this.scheduledMessagesById.set(scheduledMessage.id, {
-      ...scheduledMessage,
+    this.scheduledJobsById.set(scheduleJob.id, {
+      ...scheduleJob,
       timeout
     });
   }
 
   /** Clears all active schedule timers. */
   private clearAllScheduledMessageTimers(): void {
-    for (const [id] of this.scheduledMessagesById.entries()) {
-      this.clearScheduledMessageTimer(id);
+    for (const [id] of this.scheduledJobsById.entries()) {
+      this.clearScheduledJobTimer(id);
     }
   }
 
   /** Clears an active timer for a specific schedule id. */
-  private clearScheduledMessageTimer(id: number): void {
-    const scheduledMessage = this.scheduledMessagesById.get(id);
-    if (!scheduledMessage) {
+  private clearScheduledJobTimer(id: number): void {
+    const scheduleJob = this.scheduledJobsById.get(id);
+    if (!scheduleJob) {
       return;
     }
 
-    if (scheduledMessage.timeout) {
-      clearTimeout(scheduledMessage.timeout);
+    if (scheduleJob.timeout) {
+      clearTimeout(scheduleJob.timeout);
     }
 
-    this.scheduledMessagesById.delete(id);
+    this.scheduledJobsById.delete(id);
   }
 
-  /** Executes a scheduled message by forwarding it into the target thread. */
-  private async executeScheduledMessage(id: number): Promise<void> {
-    const scheduledMessage = this.scheduledMessagesById.get(id);
-    if (!scheduledMessage) {
+  /** Executes one schedule occurrence by forwarding it into the target thread. */
+  private async executeScheduledJob(id: number): Promise<void> {
+    const scheduleJob = this.scheduledJobsById.get(id);
+    if (!scheduleJob) {
       return;
     }
 
-    this.clearScheduledMessageTimer(id);
+    this.clearScheduledJobTimer(id);
+    const currentRunAtMs = scheduleJob.nextRunAtMs ?? Date.now();
+    const nextRunAtMs = computeNextScheduleRunAtMs(scheduleJob.spec, currentRunAtMs + 1);
 
     if (!this.codexAppServer) {
       const errorText = "Codex app server is not configured.";
-      this.stateDatabase.markScheduledMessageFailed(id, errorText);
+      const updatedJob = this.stateDatabase.advanceScheduleJobAfterRun({
+        id,
+        lastRunAtMs: currentRunAtMs,
+        nextRunAtMs,
+        lastError: errorText
+      });
+      if (updatedJob) {
+        this.registerScheduledJob(updatedJob);
+      }
       await this.channel.sendSystemMessage(
-        scheduledMessage.roomId,
+        scheduleJob.roomId,
         `Scheduled message #${String(id)} failed: ${errorText}`
       );
       return;
@@ -1549,20 +1589,35 @@ export class BotController {
 
     try {
       await this.sendUserMessageToThread(
-        scheduledMessage.roomId,
-        scheduledMessage.threadId,
-        `[Scheduled message]\n${scheduledMessage.message}`
+        scheduleJob.roomId,
+        scheduleJob.threadId,
+        `[Scheduled message]\n${scheduleJob.message}`
       );
-      this.stateDatabase.markScheduledMessageCompleted(id);
+      const updatedJob = this.stateDatabase.advanceScheduleJobAfterRun({
+        id,
+        lastRunAtMs: currentRunAtMs,
+        nextRunAtMs
+      });
+      if (updatedJob) {
+        this.registerScheduledJob(updatedJob);
+      }
       await this.channel.sendSystemMessage(
-        scheduledMessage.roomId,
+        scheduleJob.roomId,
         `Delivered scheduled message #${String(id)}.`
       );
     } catch (error) {
       const errorText = String(error);
-      this.stateDatabase.markScheduledMessageFailed(id, errorText);
+      const updatedJob = this.stateDatabase.advanceScheduleJobAfterRun({
+        id,
+        lastRunAtMs: currentRunAtMs,
+        nextRunAtMs,
+        lastError: errorText
+      });
+      if (updatedJob) {
+        this.registerScheduledJob(updatedJob);
+      }
       await this.channel.sendSystemMessage(
-        scheduledMessage.roomId,
+        scheduleJob.roomId,
         `Scheduled message #${String(id)} failed: ${errorText}`
       );
     }
@@ -1571,18 +1626,17 @@ export class BotController {
   /** MCP handler for listing schedules. */
   private listSchedulesForMcp(roomId?: string): unknown {
     if (roomId?.trim()) {
-      return this.stateDatabase.listPendingScheduledMessagesByRoom(roomId.trim());
+      return this.stateDatabase.listActiveScheduleJobsByRoom(roomId.trim());
     }
 
-    return this.stateDatabase.listAllPendingScheduledMessages();
+    return this.stateDatabase.listAllActiveScheduleJobs();
   }
 
   /** MCP handler for creating schedules. */
   private async createScheduleForMcp(input: {
     roomId: string;
     message: string;
-    runAtMs?: number;
-    secondsFromNow?: number;
+    spec: ScheduleSpec;
     threadId?: string;
   }): Promise<unknown> {
     const roomId = input.roomId.trim();
@@ -1600,29 +1654,13 @@ export class BotController {
       throw new Error(`No mapped thread for room ${roomId}.`);
     }
 
-    let runAtMs = input.runAtMs;
-    if (!Number.isFinite(runAtMs) && Number.isFinite(input.secondsFromNow)) {
-      runAtMs = Date.now() + Math.trunc((input.secondsFromNow as number) * 1000);
-    }
-
-    if (!Number.isFinite(runAtMs)) {
-      throw new Error("Either runAtMs or secondsFromNow is required.");
-    }
-
-    const normalizedRunAtMs = Math.trunc(runAtMs as number);
-    if (normalizedRunAtMs <= Date.now()) {
-      throw new Error("Scheduled time must be in the future.");
-    }
-
-    const scheduledMessage = this.stateDatabase.createScheduledMessage({
+    const spec = normalizeScheduleSpec(input.spec);
+    return this.createScheduleJobForRoom({
       roomId,
       threadId,
       message,
-      runAtMs: normalizedRunAtMs
+      spec
     });
-    this.registerScheduledMessage(scheduledMessage);
-
-    return scheduledMessage;
   }
 
   /** MCP handler for cancelling schedules. */
@@ -1636,12 +1674,12 @@ export class BotController {
     }
 
     const normalizedId = Math.trunc(id);
-    const cancelled = this.stateDatabase.cancelScheduledMessage(normalizedRoomId, normalizedId);
+    const cancelled = this.stateDatabase.cancelScheduleJob(normalizedRoomId, normalizedId);
     if (!cancelled) {
       return { cancelled: false, id: normalizedId };
     }
 
-    this.clearScheduledMessageTimer(normalizedId);
+    this.clearScheduledJobTimer(normalizedId);
     return { cancelled: true, id: normalizedId };
   }
 
