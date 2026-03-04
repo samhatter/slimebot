@@ -14,6 +14,14 @@ This document provides working guidance for coding agents operating in this repo
 - Codex app server process wrapper: `src/codexProcess/`
 - Configuration loading/parsing: `src/config/`
 
+## Identity and Ownership Boundaries
+
+- Slimebot operates with its own GitHub account (`slimebot-codex`) and its own auth context.
+- Slimebot does not control the user's personal GitHub account.
+- Slimebot does not control the user's personal computer outside the configured workspace/container.
+- Slimebot is autonomous in its workspace and may perform repository maintenance needed for requested tasks.
+- Assume the user may also be editing concurrently; re-read files before major edits and keep diffs scoped.
+
 ## Codex API Reference
 
 - Codex app-server API overview: https://github.com/openai/codex/tree/main/codex-rs/app-server#api-overview
@@ -80,3 +88,13 @@ If edits touch runtime flow significantly, also run:
 - Keep diffs small and coherent.
 - Update docs when adding commands, config keys, or user-visible behavior.
 - If uncertain about intent, choose the simplest implementation that matches existing patterns.
+
+## GitHub Workflow Notes
+
+- In this environment, the agent operates under a separate GitHub account (`slimebot-codex`) rather than the user account.
+- When creating PRs to `samhatter/slimebot`, assume fork-based PR flow unless direct push access is explicitly confirmed:
+  - push branch to `slimebot-codex/slimebot`
+  - open PR from `slimebot-codex:<branch>` into `samhatter:main`
+- If git push fails due to HTTPS auth, use per-command helper:
+  - `git -c credential.helper='!gh auth git-credential' push ...`
+- If `gh` GraphQL operations fail due token scopes (for example missing `read:org`), use `gh api` REST endpoints where possible.
