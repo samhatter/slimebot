@@ -8,7 +8,7 @@ import { asRecord, optionalString, type JsonRecord } from "../config/parsing.js"
 export type ControllerConfig = {
   commandPrefix: string;
   stateDatabasePath: string;
-  apiSocketPath: string;
+  mcpSocketPath: string;
 };
 
 /** Parses controller configuration from root app config. */
@@ -18,6 +18,9 @@ export function parseControllerConfig(root: JsonRecord): ControllerConfig {
   return {
     commandPrefix: optionalString(controllerRecord ?? {}, "commandPrefix") ?? "!",
     stateDatabasePath: optionalString(controllerRecord ?? {}, "stateDatabasePath") ?? "/app/state/slimebot-state.sqlite3",
-    apiSocketPath: optionalString(controllerRecord ?? {}, "apiSocketPath") ?? "/var/lib/slimebot/workspace/slimebot-controller.sock"
+    mcpSocketPath:
+      optionalString(controllerRecord ?? {}, "mcpSocketPath")
+      ?? optionalString(controllerRecord ?? {}, "apiSocketPath")
+      ?? "/var/lib/slimebot/workspace/slimebot-controller.sock"
   };
 }

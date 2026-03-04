@@ -14,10 +14,9 @@ Slimebot bridges Matrix rooms to a Codex `app-server` process over JSON-RPC (std
   - auto-join invite handling (optionally restricted by `allowedInviteSender`)
   - rate-limit aware send retries (`M_LIMIT_EXCEEDED`)
   - command parsing with canonical names + aliases
-  - local file upload command for sending workspace media (`!upload`)
 - SQLite-backed state persistence (room routes + per-thread state).
 - SQLite-backed scheduled message queue with timer restore on startup.
-- Controller-owned Unix-socket HTTP API with capability discovery + event stream.
+- Controller-owned MCP server over a Unix domain socket.
 - Startup restore flow that resumes persisted thread mappings when possible.
 - Turn handling:
   - `turn/steer` when a room sends a new message during an in-flight turn
@@ -77,7 +76,7 @@ Key sections:
 - `controller`
   - `commandPrefix` (currently parsed but not enforced by Matrix command parsing)
   - `stateDatabasePath`
-  - `apiSocketPath` (Unix socket for controller API)
+  - `mcpSocketPath` (Unix socket for controller MCP server)
 - `codex`
   - command and args used to launch app-server
 
@@ -85,42 +84,35 @@ Default Codex launch is equivalent to:
 
 - `codex app-server --listen stdio://`
 
-## Controller API (Unix Socket)
+## Controller MCP Server (Unix Socket)
 
-Slimebot exposes a controller-owned HTTP API over a Unix socket (default: `/var/lib/slimebot/workspace/slimebot-controller.sock`).
+Slimebot exposes a controller-owned MCP server over a Unix socket (default: `/var/lib/slimebot/workspace/slimebot-controller.sock`).
 
-Implemented routes:
+Exposed tools:
 
-- `GET /health`
-- `GET /capabilities`
-- `GET /openapi.json`
-- `GET /events` (SSE stream)
-- `GET /schedules?roomId=<roomId>`
-- `POST /schedules`
-- `DELETE /schedules/{id}?roomId=<roomId>`
-- `POST /threads/{threadId}/message`
-- `POST /channels/matrix/upload`
+- `schedule_list`
+- `schedule_create`
+- `schedule_cancel`
+- `matrix_upload_file`
 
-The `/openapi.json` document is included so an OpenAPI-to-MCP bridge can expose these routes as tools.
+## Codex MCP Bridge
 
-## Native MCP Adapter
+This repo also includes a thin stdio bridge for Codex that forwards bytes between stdio and the controller MCP socket:
 
-This repo also includes a native MCP stdio server that proxies controller capabilities over the Unix socket API:
-
-- Source: `src/mcp/controllerMcpServer.ts`
-- Build/run: `npm run build && npm run start:mcp-controller`
+- Source: `src/mcp/controllerSocketBridge.ts`
+- Build/run: `npm run build && npm run start:mcp-bridge`
 
 Environment:
 
-- `SLIMEBOT_CONTROLLER_API_SOCKET_PATH` (optional): defaults to `/var/lib/slimebot/workspace/slimebot-controller.sock`
+- `SLIMEBOT_CONTROLLER_MCP_SOCKET_PATH` (optional): defaults to `/var/lib/slimebot/workspace/slimebot-controller.sock`
 
 Example Codex MCP config:
 
 ```toml
 [mcp_servers.slimebot_controller]
 command = "node"
-args = ["/app/dist/mcp/controllerMcpServer.js"]
-env = { SLIMEBOT_CONTROLLER_API_SOCKET_PATH = "/var/lib/slimebot/workspace/slimebot-controller.sock" }
+args = ["/app/dist/mcp/controllerSocketBridge.js"]
+env = { SLIMEBOT_CONTROLLER_MCP_SOCKET_PATH = "/var/lib/slimebot/workspace/slimebot-controller.sock" }
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 ```
@@ -144,7 +136,6 @@ General:
 - `!schedule at <ISO-8601> <message>` — schedule message delivery at absolute time
 - `!schedule list` — list pending schedules for this room
 - `!schedule cancel <id>` — cancel pending schedule in this room
-- `!upload <path> [caption]` — upload local workspace file to the current Matrix room
 
 Thread operations:
 
@@ -172,7 +163,6 @@ Model & reasoning aliases:
 - `!v [on|off]` — alias for `!verbosity`
 - `!t [threadId]` — alias for `!thread`
 - `!sch ...` — alias prefix for `!schedule`
-- `!up <path> [caption]` — alias for `!upload`
 
 Auth:
 

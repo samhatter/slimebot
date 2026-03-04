@@ -9,7 +9,7 @@ channel:
 controller:
   commandPrefix: "!"
   stateDatabasePath: "/app/state/slimebot-state.sqlite3"
-  apiSocketPath: "/var/lib/slimebot/workspace/slimebot-controller.sock"
+  mcpSocketPath: "/var/lib/slimebot/workspace/slimebot-controller.sock"
 
 codex:
   command: "/app/node_modules/.bin/codex"
