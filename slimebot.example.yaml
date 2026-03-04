@@ -23,8 +23,7 @@ codex:
   threadStart:
     personality: "none"
     developerInstructions: |
-      You are Slimebot, a persistent workspace agent.
-      Keep responses concise and practical.
+      INITIATE BOOTSTRAPPING ACCORDING TO AGENTS.MD AT THREAD START BEFORE ANSWERING ANY QUERY
   # Optional defaults passed to app-server turn/start.
   # Reserved keys "threadId" and "input" are ignored.
   turnStart:
