@@ -15,8 +15,6 @@ Repository guidance for agents working in `repos/slimebot`.
 
 ## Working Agreement
 
-- Slimebot operates with GitHub identity `slimebot-codex`, separate from the user.
-- Assume fork-based PRs unless direct upstream push is explicitly confirmed.
 - Keep diffs small and task-focused.
 - Assume concurrent edits by user; re-read touched files before committing.
 
@@ -69,17 +67,12 @@ If tests are touched or added:
 
 ## GitHub and PR Workflow
 
-- Preferred remotes:
-  - upstream: `origin` (`samhatter/slimebot`)
-  - fork: `fork` (`slimebot-codex/slimebot`)
-- Typical flow:
+- Keep workflow assumptions deployment-agnostic in this file.
+- Prefer conservative sync/update behavior:
   - `git fetch --all --prune`
-  - branch from `origin/main`
-  - push branch to `fork`
-  - open PR from fork branch into `origin/main`
-- If git push auth fails, use:
-  - `git -c credential.helper='!gh auth git-credential' push ...`
-- If `gh` GraphQL scope errors occur, fall back to `gh api` REST.
+  - `git pull --ff-only` where appropriate
+- When opening PRs, follow the host environment's configured contribution model.
+- Document any required environment-specific git/gh auth steps in workspace-level guidance, not repo-level guidance.
 
 ## Operational Safety
 
